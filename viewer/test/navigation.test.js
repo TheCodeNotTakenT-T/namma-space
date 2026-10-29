@@ -41,7 +41,32 @@ test('routes around the desk and walking cannot pass through it', async () => {
 test('rejects a partial path to a disconnected floor',async()=>{
   const root=new Group();
   for(const x of [-4,4]){const m=new Mesh(new BoxGeometry(4,0.2,4),new MeshBasicMaterial());m.position.set(x,-0.1,0);root.add(m);}
-  const nav=await buildNavigation(root);
+  const nav=await buildNavigation(root,{fillHoles:false});
   try {assert.equal(nav.route(new Vector3(-4,0.04,0),new Vector3(4,0.04,0)),null);}
   finally {nav.dispose();}
+});
+
+const box=(w,h,d,x,y,z)=>{const m=new Mesh(new BoxGeometry(w,h,d),new MeshBasicMaterial());m.position.set(x,y,z);return m;};
+
+test('a hole in the reconstructed floor is filled, a bench still blocks',async()=>{
+  const root=new Group();
+  root.add(box(4,.02,3,0,-.01,-2.5), box(4,.02,3,0,-.01,2.5));  // floor with a 2 m hole in the middle
+  root.add(box(4,.45,.4,0,.225,3.5));                             // bench seat across the far end
+  const nav=await buildNavigation(root);
+  try{
+    assert.ok(nav.route(new Vector3(0,0,-3),new Vector3(0,0,2.5)),'walker crosses the unfilmed floor');
+    const state=nav.nearest(new Vector3(0,0,2.5));assert.ok(state);
+    for(let i=0;i<60;i++)nav.move(state,new Vector3(0,0,.04));
+    assert.ok(state.point.z<3.3,'a 45 cm bench seat still blocks');
+  }finally{nav.dispose();}
+});
+
+test('floating noise above 1.2 m and bumps under 30 cm do not block walking',async()=>{
+  const root=new Group();
+  root.add(box(4,.02,8,0,-.01,0));
+  root.add(box(4,.1,.6,0,1.45,-1));   // floating blob at head height across the room
+  root.add(box(4,.25,.3,0,.125,1));   // 25 cm bump across the room
+  const nav=await buildNavigation(root);
+  try{assert.ok(nav.route(new Vector3(0,0,-3),new Vector3(0,0,3)),'walker passes under the blob and over the bump');}
+  finally{nav.dispose();}
 });

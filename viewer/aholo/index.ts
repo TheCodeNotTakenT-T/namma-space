@@ -62,7 +62,7 @@ let baseSpeed = 0.5;
 let autoRotate = false;
 let walkingTools: ReturnType<typeof createWalkingTools>;
 const resolutionBudget = new ResolutionBudget();
-let performanceMode = 'auto';
+let performanceMode = 'native';
 const motionSamples: number[] = [];
 const submitSamples: number[] = [];
 function applyResolution() {
@@ -281,7 +281,8 @@ async function loadSplatSource(source: string | File, displayName: string, fileS
                 camera.up.set(up[0], up[1], up[2]);
                 const target = {x:p[0]+r[0][2]*3, y:p[1]+r[1][2]*3, z:p[2]+r[2][2]*3};
                 camera.lookAt(new Vector3(target.x, target.y, target.z));
-                camera.fov = 2*Math.atan(v.height/(2*v.fy))*180/Math.PI;
+                // A walkthrough reads best near a human field of view, not the camera's narrow one.
+                camera.fov = Number(rangeFov.value);
                 camera.updateProjectionMatrix();
                 control.setOrbitCenter(target); control.stop();
             }
@@ -304,7 +305,7 @@ function setupViewer() {
 
     viewer = createViewer('ply-viewer', container, { antialiasing: false });
     applyResolution();
-    camera = new PerspectiveCamera(60, width / height, 0.05, 2000);
+    camera = new PerspectiveCamera(Number(rangeFov.value), width / height, 0.05, 2000);
     viewer.setCamera(camera);
 
     control = new CameraControl(camera, container, {

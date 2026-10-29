@@ -1,6 +1,7 @@
 // Portable calibration belongs to this exact visual/collision pair, never a title.
-export const WALK_PROFILE = 'recast-cs005-ch004-height170-radius025-v2';
-const PREVIOUS_GRID_PROFILE = 'recast-cs008-ch004-height170-radius025-v1';
+export const WALK_PROFILE = 'recast-cs005-ch004-height120-climb030-radius015-floorfill-v3';
+// Setups store calibration and entrance only, so ones saved under earlier walker settings stay valid.
+const EARLIER_PROFILES = ['recast-cs005-ch004-height170-radius025-v2', 'recast-cs008-ch004-height170-radius025-v1'];
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const vector = (value, length) => Array.isArray(value) && value.length === length && value.every(Number.isFinite);
 const demand = (ok, message) => { if (!ok) throw Error(message); };
@@ -15,7 +16,7 @@ export function validateWalk(saved, scene) {
   demand(saved.sceneIdentity === sceneIdentity(scene) && sceneIdentity(scene), 'Walking setup belongs to different scene files.');
   // These records contain calibration/entrance, never cached nav polygons.
   // Resume rebuilds navigation and checks the entrance using the current grid.
-  demand([WALK_PROFILE, PREVIOUS_GRID_PROFILE].includes(saved.profile) && saved.coordinateSpace === 'raw-ply-v1', 'Walking settings changed; rebuild this setup.');
+  demand([WALK_PROFILE, ...EARLIER_PROFILES].includes(saved.profile) && saved.coordinateSpace === 'raw-ply-v1', 'Walking settings changed; rebuild this setup.');
   demand(vector(saved.floor?.origin, 3) && vector(saved.floor?.quaternion, 4), 'Invalid saved floor.');
   demand(Math.abs(Math.hypot(...saved.floor.quaternion) - 1) < 1e-5, 'Invalid saved floor rotation.');
   demand(Number.isFinite(saved.metresPerUnit) && saved.metresPerUnit > 0 && saved.metresPerUnit < 1e5, 'Invalid saved scale.');

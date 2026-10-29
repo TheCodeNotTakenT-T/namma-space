@@ -28,7 +28,7 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
     <button data-action="import">Load a saved setup file</button>
     <input data-field="import" type="file" accept=".json" hidden>
     <p data-field="saved" role="status">Setup is saved on this browser after you choose a walking start. Download it to carry it to another browser or demo package.</p>
-    <p data-field="status" role="status">Load a supported scene. No automatic floor filling.</p>
+    <p data-field="status" role="status">Load a supported scene. Gaps in the filmed floor are filled for walking; walls and furniture still block.</p>
     <canvas width="240" height="180" aria-label="Top-down estimated geometry and player position"></canvas>`;
   document.getElementById('app').append(panel);
   const button=name=>panel.querySelector(`[data-action="${name}"]`);
@@ -141,7 +141,7 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
     field('overlay').checked=false;drawables.forEach(m=>m.visible=false);
     pause();state=nearest;savedControls={useOrbit:control.useOrbit,moveSpeed:control.moveSpeed,wheelSpeed:control.wheelSpeed};
     const modeSelect=document.getElementById('select-camera-mode');previousCameraMode=modeSelect.value;modeSelect.value='flight';onWalkingStart();
-    control.useOrbit=false;control.moveSpeed=1.8/scale;control.wheelSpeed=0;control.enabled=true;
+    control.useOrbit=false;control.moveSpeed=1.2/scale;control.wheelSpeed=0;control.enabled=true;
     const up=new THREE.Vector3(0,1,0).transformDirection(navToRaw);camera.up.set(up.x,up.y,up.z);
     placeCamera();
     if(forward)camera.lookAt(new ViewVector3(camera.position.x+forward[0],camera.position.y+forward[1],camera.position.z+forward[2]));

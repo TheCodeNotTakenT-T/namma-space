@@ -3,8 +3,9 @@
 **One ordinary video of an indoor space becomes a photorealistic 3D room you can walk through in a web browser.**
 Team ruakpeedkahem (rpk): Akarsh Shrivastav, Mayan S Hiremath, NIT Goa · Techfest 2026-27, IIT Bombay.
 
-- **Live walkthrough:** https://thecodenottakent-t.github.io/namma-space/ (open **Walking setup > Enter saved
-  walking setup**, then WASD to move and drag to look; best on a desktop browser using its dedicated GPU)
+- **Live walkthrough:** https://namma-space-7ny.pages.dev/ (open **Walking setup > Enter saved walking setup**,
+  then WASD to move and drag to look; best on a desktop browser using its dedicated GPU). Mirror:
+  https://thecodenottakent-t.github.io/namma-space/ (slower to load from India)
 - **Capture SOP:** [docs/CAPTURE_SOP.md](docs/CAPTURE_SOP.md)
 - **Sample data:** [tests/sample/](tests/sample/) (30 s of our classroom capture)
 

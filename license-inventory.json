@@ -1,0 +1,50 @@
+[
+  {
+    "name": "@manycore/aholo-viewer",
+    "version": "1.10.0",
+    "license": "MIT",
+    "notices": [
+      "licenses/@manycore__aholo-viewer/1.10.0/LICENSE"
+    ]
+  },
+  {
+    "name": "@recast-navigation/core",
+    "version": "0.43.1",
+    "license": "MIT",
+    "notices": [
+      "licenses/@recast-navigation__core/0.43.1/LICENSE"
+    ]
+  },
+  {
+    "name": "@recast-navigation/generators",
+    "version": "0.43.1",
+    "license": "MIT",
+    "notices": [
+      "licenses/@recast-navigation__generators/0.43.1/LICENSE"
+    ]
+  },
+  {
+    "name": "@recast-navigation/wasm",
+    "version": "0.43.1",
+    "license": "MIT",
+    "notices": [
+      "licenses/@recast-navigation__wasm/0.43.1/LICENSE"
+    ]
+  },
+  {
+    "name": "recast-navigation",
+    "version": "0.43.1",
+    "license": "MIT",
+    "notices": [
+      "licenses/recast-navigation/0.43.1/LICENSE"
+    ]
+  },
+  {
+    "name": "three",
+    "version": "0.186.1",
+    "license": "MIT",
+    "notices": [
+      "licenses/three/0.186.1/LICENSE"
+    ]
+  }
+]

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Namma Space · ruakpeedkahem (rpk) · NIT Goa</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="../assets/aholo-D-LLCgNX.js"></script>
+    <link rel="stylesheet" crossorigin href="../assets/aholo-DR00qQlM.css">
+  </head>
+  <body>
+    <div id="app">
+<div class="namma-status">Namma Space by team ruakpeedkahem (rpk): Akarsh Shrivastav, Mayan S Hiremath · NIT Goa · Powered by Aholo · <span id="walk-status">Explore the reconstruction · Open Walking setup to enter.</span></div>
+      <!-- 3D Canvas Container -->
+      <div id="viewer-container" tabindex="0"></div>
+
+      <!-- Top Floating Navigation -->
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <div class="brand-badge glass-panel">
+            <div class="brand-logo">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+              </svg>
+            </div>
+            <span class="brand-text">Namma Space</span>
+          </div>
+
+          <div class="file-info-badge glass-panel">
+            <span id="file-status-dot" class="file-status-dot loading"></span>
+            <span id="file-name">Choose a room file</span>
+            <span id="splat-count" style="color: var(--text-muted); font-size: 11px;">(Loading...)</span>
+          </div>
+        </div>
+
+        <div class="top-bar-right">
+          <div class="stats-badge glass-panel">
+            <div class="stat-item">
+              <span>Draws/s:</span>
+              <span id="stat-fps" class="stat-val">--</span>
+            </div>
+            <div class="stat-item">
+              <span>Submit:</span>
+              <span id="stat-ms" class="stat-val">-- ms</span>
+            </div>
+          </div>
+
+          <input type="file" id="file-input" accept=".ply,.splat,.sog,.spz" style="display: none;" />
+          <button id="btn-upload" class="btn" title="Open local PLY/3DGS file">
+            <svg viewBox="0 0 24 24">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            <span>Open File</span>
+          </button>
+
+          <button id="btn-reset" class="btn" title="Reset Camera View (R)">
+            <svg viewBox="0 0 24 24">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+              <polyline points="3 3 3 8 8 8"></polyline>
+            </svg>
+            <span>Reset</span>
+          </button>
+
+          <button id="btn-auto-rotate" class="btn" title="Toggle Turntable Rotation">
+            <svg viewBox="0 0 24 24">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+            </svg>
+            <span>Turntable</span>
+          </button>
+
+          <button id="btn-settings" class="btn btn-icon" title="Toggle Settings Panel">
+            <svg viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Sidebar / Settings Panel -->
+      <aside id="sidebar" class="sidebar glass-panel">
+        <div class="sidebar-header">
+          <div class="sidebar-title">
+            <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" fill="none" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+            <span>Viewer Controls</span>
+          </div>
+          <button id="btn-close-sidebar" class="btn btn-icon" style="width: 26px; height: 26px; border: none; background: transparent;">
+            <svg viewBox="0 0 24 24">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Camera Section -->
+        <div class="section-group">
+          <span class="section-label">Camera & Coordinate System</span>
+          
+          <div class="control-row">
+            <span>Coordinates</span>
+            <select id="select-coord" class="select-input">
+              <option value="opencv" selected>OpenCV (-Y Up)</option>
+              <option value="opengl">OpenGL (+Y Up)</option>
+              <option value="aholo">Aholo (+Z Up)</option>
+            </select>
+          </div>
+
+          <div class="control-row">
+            <span>Camera Mode</span>
+            <select id="select-camera-mode" class="select-input">
+              <option value="orbit" selected>Orbit / Turntable</option>
+              <option value="flight">Free Flight (WASD)</option>
+            </select>
+          </div>
+
+          <div class="control-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; width: 100%;">
+              <span>FOV</span>
+              <span id="val-fov" class="range-val">68°</span>
+            </div>
+            <div class="range-container">
+              <input type="range" id="range-fov" class="range-input" min="30" max="100" value="68" />
+            </div>
+          </div>
+
+          <div class="control-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; width: 100%;">
+              <span>Movement Speed</span>
+              <span id="val-speed" class="range-val">0.1x</span>
+            </div>
+            <div class="range-container">
+              <input type="range" id="range-speed" class="range-input" min="0.1" max="4.0" step="0.1" value="0.1" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Environment & Background -->
+        <div class="section-group">
+          <span class="section-label">Environment</span>
+          
+          <div class="control-row">
+            <span>Background</span>
+            <div class="color-options">
+              <button class="color-btn active" data-color="#0b0f17" style="background: #0b0f17;" title="Dark Slate"></button>
+              <button class="color-btn" data-color="#000000" style="background: #000000;" title="Pitch Black"></button>
+              <button class="color-btn" data-color="#1f2430" style="background: #1f2430;" title="Studio Gray"></button>
+              <button class="color-btn" data-color="#f8fafc" style="background: #f8fafc;" title="Pure White"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Splatting Pipeline -->
+        <div class="section-group">
+          <span class="section-label">Rendering & Pipeline</span>
+            <label class="control-row">Display quality
+              <select id="performance-mode" class="select-input">
+                <option value="balanced">Balanced</option>
+                <option value="performance">Performance</option>
+                <option value="auto">Auto · target 60 FPS</option>
+                <option value="native" selected>Native resolution</option>
+              </select>
+            </label>
+            <p id="resolution-status">100% of CSS resolution</p>
+            <p id="frame-pacing" style="font-size:12px">Move to measure frame pacing; idle is not low FPS.</p>
+            <button id="download-performance" class="btn">Download performance report</button>
+            <p style="font-size:12px">Lower resolution reduces sharpness to improve speed. Auto targets 60 FPS; it cannot guarantee it.</p>
+          
+          <div class="control-row">
+            <span>Splatting Enabled</span>
+            <label class="switch">
+              <input type="checkbox" id="toggle-splatting" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="control-row">
+            <span>Precalculate</span>
+            <label class="switch">
+              <input type="checkbox" id="toggle-precalculate" checked />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="control-row">
+            <span>Tone Mapping</span>
+            <select id="select-tone" class="select-input">
+              <option value="linear" selected>Linear</option>
+              <option value="reinhard">Reinhard</option>
+              <option value="neutral">Neutral</option>
+              <option value="aces">ACES</option>
+              <option value="acesFilmic">ACES Filmic</option>
+            </select>
+          </div>
+
+          <div class="control-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+            <div style="display: flex; justify-content: space-between; width: 100%;">
+              <span>Exposure</span>
+              <span id="val-exposure" class="range-val">1.0</span>
+            </div>
+            <div class="range-container">
+              <input type="range" id="range-exposure" class="range-input" min="0.2" max="3.0" step="0.1" value="1.0" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Splat Info Summary -->
+        <div class="section-group" style="border-top: 1px solid var(--border-color); padding-top: 12px;">
+          <span class="section-label">Dataset Info</span>
+          <div class="control-row">
+            <span>Splats:</span>
+            <span id="info-splats" class="stat-val">—</span>
+          </div>
+          <div class="control-row">
+            <span>Format:</span>
+            <span id="info-format" class="stat-val">—</span>
+          </div>
+          <div class="control-row">
+            <span>File Size:</span>
+            <span id="info-size" class="stat-val">—</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Bottom Hint Bar -->
+      <footer class="bottom-bar glass-panel">
+        <div class="help-shortcut">
+          <span class="kbd">L-Click</span>
+          <span>Orbit</span>
+        </div>
+        <div class="help-shortcut">
+          <span class="kbd">R-Click</span>
+          <span>Pan</span>
+        </div>
+        <div class="help-shortcut">
+          <span class="kbd">Scroll</span>
+          <span>Zoom</span>
+        </div>
+        <div class="help-shortcut">
+          <span class="kbd">R</span>
+          <span>Reset</span>
+        </div>
+      </footer>
+
+      <!-- Drag & Drop Zone -->
+      <div id="drag-overlay" class="drag-overlay">
+        <div class="drag-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+        </div>
+        <div class="drag-title">Drop your 3D Gaussian Splat file here</div>
+        <div class="drag-subtitle">Supports .ply, .splat, .sog, and .spz</div>
+      </div>
+
+      <!-- Loading Overlay -->
+      <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <div id="loading-title" class="loading-title">Loading room...</div>
+        <div id="loading-subtitle" class="loading-subtitle">Decompressing and parsing 3D Gaussian Splats</div>
+      </div>
+
+      <!-- Toast Notification -->
+      <div id="toast" class="toast"></div>
+    </div>
+
+  </body>
+</html>

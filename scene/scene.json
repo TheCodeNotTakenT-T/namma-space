@@ -1,0 +1,98 @@
+{
+  "version": 1,
+  "type": "namma-viewer-scene",
+  "coordinateSpace": "raw-ply-v1",
+  "title": "Classroom (Round 1)",
+  "splat": {
+    "file": "preview.spz",
+    "sha256": "6aedf778b4f67d0fa198f6416eb8915d2542615fd16151b674ece85a35eacffd",
+    "bytes": 24350577
+  },
+  "collision": {
+    "file": "collision.glb",
+    "sha256": "2f6a17d1cbdd587b1762f40480ca79a7e2fa11345e95858a00450e2878a68cab",
+    "triangles": 199999
+  },
+  "initialView": {
+    "position": [
+      -0.8156525492668152,
+      -0.026880517601966858,
+      4.4235453605651855
+    ],
+    "rotation": [
+      [
+        -0.06489747017621994,
+        -0.20589399337768555,
+        0.976419985294342
+      ],
+      [
+        0.0068979510106146336,
+        0.9783667325973511,
+        0.20676296949386597
+      ],
+      [
+        -0.9978681206703186,
+        0.020153691992163658,
+        -0.06207328289747238
+      ]
+    ],
+    "height": 1063,
+    "fy": 1912.6466064453125,
+    "up": [
+      1.4328626924506274e-10,
+      -1,
+      -7.833153123739392e-11
+    ]
+  },
+  "walkingSetup": {
+    "version": 1,
+    "type": "namma-aholo-walk",
+    "profile": "recast-cs005-ch004-height120-climb030-radius015-floorfill-v3",
+    "coordinateSpace": "raw-ply-v1",
+    "sceneIdentity": "6aedf778b4f67d0fa198f6416eb8915d2542615fd16151b674ece85a35eacffd:2f6a17d1cbdd587b1762f40480ca79a7e2fa11345e95858a00450e2878a68cab",
+    "floor": {
+      "origin": [
+        0.9192095803918675,
+        1.4911472004840798,
+        -2.476682940929427
+      ],
+      "quaternion": [
+        0.7522308713515762,
+        0,
+        0.6588217178720649,
+        0.010132139248438757
+      ]
+    },
+    "metresPerUnit": 0.7741721756186056,
+    "eyeHeight": 1.2,
+    "measurement": {
+      "metres": 2,
+      "endpoints": [
+        [
+          -3.84572489364614,
+          -1.2463032521497173,
+          -5.526889029721431
+        ],
+        [
+          -3.7890437122288763,
+          1.3364530475419714,
+          -5.5151955940446795
+        ]
+      ]
+    },
+    "entrance": [
+      -1.2733632797447778,
+      1.3997502800117299,
+      2.9336709127324525
+    ],
+    "forward": [
+      0.06657909423547663,
+      0.01609978595454731,
+      -0.9976512522434887
+    ],
+    "reviewed": true,
+    "metricVerified": false
+  },
+  "metricVerified": false,
+  "warning": "Experimental reconstruction. Walking uses the supplied measurement and reviewed surfaces; physical accuracy is not certified."
+}

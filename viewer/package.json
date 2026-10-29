@@ -1,0 +1,23 @@
+{
+  "name": "namma-space-viewer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@manycore/aholo-viewer": "file:vendor/manycore-aholo-viewer-1.10.0.tgz",
+    "recast-navigation": "^0.43.1",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "@playcanvas/splat-transform": "3.10.1",
+    "vite": "^6.4.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

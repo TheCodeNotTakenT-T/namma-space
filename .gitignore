@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+setup-logs/
+node_modules/
+viewer/dist/
+viewer/data/
+viewer/output/
+test-results/
+output/
+data/

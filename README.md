@@ -1,7 +1,7 @@
 # Namma Space
 
 **One ordinary video of an indoor space becomes a photorealistic 3D room you can walk through in a web browser.**
-Team rpk (Akarsh Shrivastav, Mayan S Hiremath, NIT Goa) · Techfest 2026-27, IIT Bombay.
+Team ruakpeedkahem (rpk): Akarsh Shrivastav, Mayan S Hiremath, NIT Goa · Techfest 2026-27, IIT Bombay.
 
 - **Live walkthrough:** https://thecodenottakent-t.github.io/namma-space/ (open **Walking setup > Enter saved
   walking setup**, then WASD to move and drag to look; best on a desktop browser using its dedicated GPU)

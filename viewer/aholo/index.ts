@@ -170,6 +170,26 @@ function resetCameraView() {
     needsRender = true;
 }
 
+// A room is tens of megabytes: show how much has arrived so a slow connection does not look frozen.
+async function downloadWithProgress(response: Response, expected: number): Promise<ArrayBuffer> {
+    const reader = response.body?.getReader();
+    if (!reader) return response.arrayBuffer();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        loadingSubtitle.textContent = `Downloading room: ${(received / 1e6).toFixed(1)} of ${(expected / 1e6).toFixed(1)} MB`;
+    }
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    loadingSubtitle.textContent = 'Checking the room file...';
+    return bytes.buffer;
+}
+
 async function loadSplatSource(source: string | File, displayName: string, fileSizeStr: string, pairing: any = null) {
     updateLoadingState(true, `Loading ${displayName}...`, 'Reading 3D Gaussian Splat data...');
     fileNameEl.textContent = displayName;
@@ -180,7 +200,7 @@ async function loadSplatSource(source: string | File, displayName: string, fileS
         if (typeof source === 'string' && pairing?.splatHash) {
             const response = await fetch(source);
             if (!response.ok) throw Error('Room visual file is unavailable.');
-            const bytes = await response.arrayBuffer();
+            const bytes = await downloadWithProgress(response, pairing.splatBytes);
             if (bytes.byteLength !== pairing.splatBytes) throw Error('Room visual file is incomplete.');
             const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
             if (digest !== pairing.splatHash) throw Error('Room visual file changed. Re-import the matching result.');

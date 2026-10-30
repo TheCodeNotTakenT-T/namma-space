@@ -310,7 +310,7 @@ function setupViewer() {
 
     control = new CameraControl(camera, container, {
         enabled: true,
-        useOrbit: true,
+        useOrbit: selectCameraMode.value === 'orbit',
         orbitMinDistance: 0.01,
         moveSpeed: baseSpeed,
         lookSpeed: 0.004,
@@ -495,7 +495,7 @@ function setupUI() {
     // Speed slider
     rangeSpeed.addEventListener('input', () => {
         const mult = Number(rangeSpeed.value);
-        valSpeed.textContent = `${mult.toFixed(1)}x`;
+        valSpeed.textContent = `${mult.toFixed(2)}x`;
         control.moveSpeed = baseSpeed * mult;
     });
 

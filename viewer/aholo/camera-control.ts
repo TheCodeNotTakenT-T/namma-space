@@ -84,7 +84,7 @@ const DEFAULT_OPTIONS: Required<CameraControlOptions> = {
     panSpeed: 0.006,
     rollSpeed: 0,  // R/F would roll the horizon; the viewer keeps it level
     ctrlMultiplier: 2,
-    shiftMultiplier: 10,
+    shiftMultiplier: 3,
     capsMultiplier: 20,
 };
 

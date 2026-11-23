@@ -41,6 +41,8 @@ test('portable manifest rejects remote/traversing assets and mismatched walking 
     collision:{file:'collision.glb',sha256:scene.collisionHash,triangles:100},walkingSetup:recipe()};
   assert.equal(validateViewerManifest(m).walkingSetup.eyeHeight,1.65);
   assert.throws(()=>validateViewerManifest({...m,splat:{...m.splat,file:'../private.spz'}}));
+  assert.equal(validateViewerManifest({...m,splat:{...m.splat,parts:4}}).splat.parts,4);
+  for(const parts of [1,0,17,2.5,'3'])assert.throws(()=>validateViewerManifest({...m,splat:{...m.splat,parts}}),/parts/);
   assert.throws(()=>validateViewerManifest({...m,collision:{...m.collision,sha256:'c'.repeat(64)}}));
 });
 

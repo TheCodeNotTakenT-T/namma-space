@@ -1,4 +1,4 @@
-"""Real GPU checks for the Namma Space environment (gsplat, MoGe-2, pycolmap, Open3D).
+"""Real GPU checks for the Namma Space environment (gsplat, MoGe-3, pycolmap-cuda12, Open3D).
 
 Every check runs in its own subprocess (a CUDA fault in one cannot hide or
 poison the others), executes a small real CUDA operation, and records the
@@ -22,7 +22,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 # Every check is required: setup passes only when all of them pass.
-CHECKS = ("environment", "torch_cuda", "gsplat", "pipeline_imports", "open3d_tsdf")
+CHECKS = ("environment", "torch_cuda", "gsplat", "pipeline_imports", "pycolmap_gpu", "open3d_tsdf")
 
 
 class CheckFailed(AssertionError):
@@ -71,18 +71,19 @@ def check_environment():
         "torch_arch_list": torch.cuda.get_arch_list(),
         "cuda_available": torch.cuda.is_available(),
         "env": {k: os.environ.get(k) for k in ("CUDA_HOME", "TORCH_CUDA_ARCH_LIST", "NVCC_FLAGS",
-                                               "NVCC_PREPEND_FLAGS", "MAX_JOBS")},
+                                               "NVCC_PREPEND_FLAGS", "MAX_JOBS", "LD_LIBRARY_PATH")},
         "nvidia_smi": _command(["nvidia-smi", "--query-gpu=name,driver_version,memory.total,compute_cap",
                                 "--format=csv,noheader"]),
         "gcc": (_command(["gcc", "--version"]) or "no output").splitlines()[0],
+        "glibc": (_command(["ldd", "--version"]) or "no output").splitlines()[0],
         "repo_commit": _command(["git", "-C", str(REPO), "rev-parse", "HEAD"]),
         "repo_dirty": bool(_command(["git", "-C", str(REPO), "status", "--porcelain", "--untracked-files=no"])),
         "gsplat_source": os.environ.get("NAMMA_GSPLAT_SRC"),
         "packages": {},
     }
     for name in ("torch", "torchvision", "numpy", "scipy", "open3d", "opencv-python", "huggingface-hub",
-                 "pycolmap", "cuda-toolkit", "nvidia-cuda-nvcc", "gsplat", "moge", "utils3d_moge", "av",
-                 "trimesh", "jaxtyping"):
+                 "pycolmap", "pycolmap-cuda12", "nvidia-cuda-runtime-cu12", "cuda-toolkit",
+                 "nvidia-cuda-nvcc", "gsplat", "moge", "utils3d_moge", "flex-gemm", "av", "trimesh", "jaxtyping"):
         try:
             details["packages"][name] = md.version(name)
         except md.PackageNotFoundError:
@@ -108,6 +109,10 @@ def check_environment():
         problems.append("PyTorch cannot use CUDA (driver too old for this Torch CUDA build, or no GPU)")
     if details["nvcc_release"] != torch.version.cuda:
         problems.append(f"nvcc {details['nvcc_release']} does not match Torch CUDA {torch.version.cuda}")
+    # Both wheels install into the same pycolmap/ directory; having both means mixed files.
+    if details["packages"]["pycolmap"] and details["packages"]["pycolmap-cuda12"]:
+        problems.append("both pycolmap (CPU) and pycolmap-cuda12 are installed; uninstall pycolmap and reinstall "
+                        "pycolmap-cuda12 so the package files are not mixed")
     if problems:
         raise CheckFailed("; ".join(problems), details)
     return details
@@ -187,17 +192,95 @@ def check_gsplat():
 
 
 def check_pipeline_imports():
-    """Everything the video pipeline imports, with licence-relevant facts."""
+    """Everything the video pipeline imports. Whether pycolmap's GPU path works is checked in pycolmap_gpu.
+
+    MoGe-3 lives at ``moge.model.v3`` and depends on FlexGEMM; both are checked here so a broken
+    --no-deps install fails setup (with a clear message) instead of silently degrading the priors
+    stage to 'MoGe unavailable' hours later.
+    """
     import av
-    import moge.model.v2  # noqa: F401  (MoGe-2; weights download on first use)
+    import moge.model.v3  # noqa: F401  (MoGe-3; weights download on first use)
     import pycolmap
     import trimesh  # noqa: F401
+    # FlexGEMM is new in MoGe-3 and is what breaks most often under --no-deps: the import of
+    # moge.model.v3 succeeds (pure Python), but the first model.infer() call hits a missing or
+    # ABI-mismatched flex_gemm. Fail here instead.
+    import importlib.util as _ilu
+    if not (_ilu.find_spec("flex_gemm") or _ilu.find_spec("flexgemm")):
+        raise AssertionError(
+            "FlexGEMM is not importable. MoGe-3 depends on it (JeffreyXiang/FlexGEMM). "
+            "Re-run molab_setup.sh; install_moge() should install flex-gemm with --no-deps. "
+            "If it did, the wheel's module name differs from flex_gemm/flexgemm -- check "
+            "`.venv/bin/python -c \"import importlib.metadata as m; print(m.distribution('flex-gemm').files)\"`.")
     for module in ("frames", "sfm", "priors", "trainer", "mesh", "export", "backup", "pipeline"):
         __import__(f"namma.{module}")
-    has_cuda = bool(getattr(pycolmap, "has_cuda", False))
-    assert not has_cuda, "pycolmap was built with CUDA: its GPU SIFT (SiftGPU) is not licensed for commercial use"
-    return {"pycolmap": pycolmap.__version__, "pycolmap_cuda": has_cuda, "av": av.__version__,
-            "moge": _module_file("moge")}
+    return {"pycolmap": pycolmap.__version__, "pycolmap_cuda": bool(getattr(pycolmap, "has_cuda", False)),
+            "av": av.__version__, "moge": _module_file("moge"), "moge_v3": _module_file("moge.model.v3"),
+            "flex_gemm": _module_file("flex_gemm") or _module_file("flexgemm")}
+
+
+def check_pycolmap_gpu():
+    """pycolmap-cuda12: GPU SIFT extraction and matching on synthetic images, with the device forced to CUDA.
+
+    pycolmap's default Device.auto silently falls back to the CPU, so this forces Device.cuda: a missing
+    CUDA 12 runtime library, or a wheel without kernels for this GPU (e.g. sm_120), raises here instead of
+    quietly running slowly. Keypoint and match counts are read from the COLMAP database as evidence.
+    """
+    import sqlite3
+    import tempfile
+    import cv2
+    import numpy as np
+    import pycolmap
+
+    version = pycolmap.__version__
+    assert getattr(pycolmap, "has_cuda", False), (
+        f"pycolmap {version} reports has_cuda=False: the CPU wheel is installed (or CUDA failed to load); "
+        "install pycolmap-cuda12")
+
+    # The extension must resolve every shared library (CUDA 12 runtime etc.) before any CUDA call.
+    binaries = sorted(Path(pycolmap.__file__).resolve().parent.glob("*.so*"))
+    assert binaries, "no native module found next to pycolmap/__init__.py"
+    binary = str(binaries[0])
+    missing = [line.strip() for line in _command(["ldd", binary]).splitlines() if "not found" in line]
+    if missing:
+        raise CheckFailed("pycolmap native module has unresolved libraries: " + "; ".join(missing),
+                          {"binary": binary, "missing_libraries": missing, "version": version})
+
+    # Three crops of one blurred noise texture, shifted a few pixels: guaranteed SIFT blobs and matches.
+    rng = np.random.default_rng(0)
+    texture = cv2.GaussianBlur(rng.random((540, 720)).astype(np.float32), (0, 0), 2.0)
+    texture = (255 * (texture - texture.min()) / np.ptp(texture)).astype(np.uint8)
+    offsets = [(0, 0), (12, 6), (24, 12)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        images = tmp / "images"
+        images.mkdir()
+        for i, (dx, dy) in enumerate(offsets):
+            assert cv2.imwrite(str(images / f"img{i}.png"), texture[dy:dy + 480, dx:dx + 640])
+        database = tmp / "database.db"
+
+        started = time.perf_counter()
+        pycolmap.extract_features(database, images, device=pycolmap.Device.cuda)
+        extract_seconds = time.perf_counter() - started
+        started = time.perf_counter()
+        pycolmap.match_exhaustive(database, device=pycolmap.Device.cuda)
+        match_seconds = time.perf_counter() - started
+
+        connection = sqlite3.connect(str(database))
+        try:
+            keypoints = [row[0] for row in connection.execute("SELECT rows FROM keypoints ORDER BY image_id")]
+            matches = [row[0] for row in connection.execute("SELECT rows FROM matches ORDER BY pair_id")]
+            verified = [row[0] for row in connection.execute("SELECT rows FROM two_view_geometries ORDER BY pair_id")]
+        finally:
+            connection.close()
+
+    assert len(keypoints) == len(offsets) and min(keypoints) > 50, f"too few SIFT keypoints: {keypoints}"
+    assert matches and max(matches) > 20, f"GPU matching found no matches: {matches}"
+    assert verified and max(verified) > 10, f"no geometrically verified pairs: {verified}"
+    return {"binary": binary, "version": version, "has_cuda": True,
+            "keypoints_per_image": keypoints, "matches_per_pair": matches, "verified_per_pair": verified,
+            "extract_seconds": round(extract_seconds, 3), "match_seconds": round(match_seconds, 3)}
 
 
 def check_open3d_tsdf():
@@ -282,4 +365,4 @@ def _markdown(report):
 
 
 if __name__ == "__main__":
-    run_one(sys.argv[1])
+    run_one(sys.argv[1]) 

@@ -12,7 +12,8 @@ import {
 import { CameraControl } from './camera-control.js';
 import {createWalkingTools} from './walking-tools.js';
 import {ResolutionBudget} from './performance.js';
-import {validateViewerManifest} from './saved-walk.js';
+import {validateViewerManifest, sceneIdentity} from './saved-walk.js';
+import {createWayfinding} from './wayfinding/index.js';
 
 // DOM Elements
 const container = document.getElementById('viewer-container') as HTMLElement;
@@ -56,11 +57,16 @@ let control: CameraControl;
 let currentSplat: any = null;
 let currentCentroid = new Vector3(0, 0, 0);
 let currentBoundingDim = 2.0;
+// Up to 200,000 splat centres (x, y, z triples), kept to work out where the walls are.
+let splatSample: Float32Array | null = null;
 let needsRender = true;
 let currentBgColor = new Color(0.043, 0.059, 0.09); // #0b0f17
 let baseSpeed = 0.5;
 let autoRotate = false;
 let walkingTools: ReturnType<typeof createWalkingTools>;
+let wayfinding: ReturnType<typeof createWayfinding>;
+// Tagging tools are offered while developing locally, or on a hosted space opened with ?studio=1.
+const studioAllowed = import.meta.env.DEV || new URLSearchParams(location.search).has('studio');
 const resolutionBudget = new ResolutionBudget();
 let performanceMode = 'native';
 const motionSamples: number[] = [];
@@ -82,6 +88,12 @@ function showToast(message: string, type: 'success' | 'error' = 'success') {
     setTimeout(() => {
         toastEl.className = 'toast';
     }, 3500);
+}
+
+/** Fill of the loading bar, 0..1. Downloading takes it to 85%; parsing and preparing the floor finish it. */
+function setLoadingProgress(fraction: number) {
+    const bar = document.getElementById('loading-progress');
+    if (bar) bar.style.width = `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
 }
 
 function updateLoadingState(show: boolean, title = '', subtitle = '') {
@@ -171,7 +183,7 @@ function resetCameraView() {
 }
 
 // A room is tens of megabytes: show how much has arrived so a slow connection does not look frozen.
-async function downloadWithProgress(response: Response, expected: number): Promise<ArrayBuffer> {
+async function downloadWithProgress(response: Response, expected: number, before = 0): Promise<ArrayBuffer> {
     const reader = response.body?.getReader();
     if (!reader) return response.arrayBuffer();
     const chunks: Uint8Array[] = [];
@@ -181,26 +193,38 @@ async function downloadWithProgress(response: Response, expected: number): Promi
         if (done) break;
         chunks.push(value);
         received += value.length;
-        loadingSubtitle.textContent = `Downloading room: ${(received / 1e6).toFixed(1)} of ${(expected / 1e6).toFixed(1)} MB`;
+        loadingSubtitle.textContent = `Downloading ${((before + received) / 1e6).toFixed(1)} of ${(expected / 1e6).toFixed(1)} MB`;
+        setLoadingProgress((before + received) / expected * 0.85);
     }
     const bytes = new Uint8Array(received);
     let offset = 0;
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-    loadingSubtitle.textContent = 'Checking the room file...';
+    loadingSubtitle.textContent = 'Checking the download';
     return bytes.buffer;
 }
 
 async function loadSplatSource(source: string | File, displayName: string, fileSizeStr: string, pairing: any = null) {
-    updateLoadingState(true, `Loading ${displayName}...`, 'Reading 3D Gaussian Splat data...');
+    updateLoadingState(true, displayName.replace(/\.spz$/, ''), 'Starting');
+    setLoadingProgress(0.02);
     fileNameEl.textContent = displayName;
     infoSize.textContent = fileSizeStr;
 
     try {
         let input = source;
         if (typeof source === 'string' && pairing?.splatHash) {
-            const response = await fetch(source);
-            if (!response.ok) throw Error('Room visual file is unavailable.');
-            const bytes = await downloadWithProgress(response, pairing.splatBytes);
+            const urls = pairing.splatParts
+                ? Array.from({length: pairing.splatParts}, (_, i) => `${source}.${String(i).padStart(3, '0')}`) : [source];
+            const pieces: Uint8Array[] = [];
+            let received = 0;
+            for (const url of urls) {
+                const response = await fetch(url);
+                if (!response.ok) throw Error('Room visual file is unavailable.');
+                const piece = new Uint8Array(await downloadWithProgress(response, pairing.splatBytes, received));
+                pieces.push(piece);
+                received += piece.byteLength;
+            }
+            const bytes = pieces.length === 1 ? pieces[0] : new Uint8Array(received);
+            if (pieces.length > 1) { let offset = 0; for (const piece of pieces) { bytes.set(piece, offset); offset += piece.byteLength; } }
             if (bytes.byteLength !== pairing.splatBytes) throw Error('Room visual file is incomplete.');
             const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('');
             if (digest !== pairing.splatHash) throw Error('Room visual file changed. Re-import the matching result.');
@@ -213,14 +237,16 @@ async function loadSplatSource(source: string | File, displayName: string, fileS
         else if (nameLower.endsWith('.splat')) fileType = SplatLoader.SplatFileType.SPLAT;
         else if (nameLower.endsWith('.ksplat')) fileType = SplatLoader.SplatFileType.KSPLAT;
 
-        loadingSubtitle.textContent = 'Parsing splats with Web Worker...';
+        loadingSubtitle.textContent = 'Unpacking the 3D model';
+        setLoadingProgress(0.9);
         const data = await SplatLoader.parseSplatData(
             fileType,
             input,
             SplatLoader.SplatPackType.Compressed,
         );
 
-        loadingSubtitle.textContent = 'Allocating GPU geometry & shaders...';
+        loadingSubtitle.textContent = 'Handing it to your graphics card';
+        setLoadingProgress(0.95);
 
         // Remove old splat if exists
         if (currentSplat) {
@@ -261,6 +287,9 @@ async function loadSplatSource(source: string | File, displayName: string, fileS
             sumX += x; sumY += y; sumZ += z;
         }
 
+        const stride = Math.max(1, Math.ceil(count / 200000));
+        splatSample = new Float32Array(Math.floor(count / stride) * 3);
+        for (let i = 0, j = 0; j + 2 < splatSample.length; i += stride, j += 3) { splatSample[j] = centers[i * 3]; splatSample[j + 1] = centers[i * 3 + 1]; splatSample[j + 2] = centers[i * 3 + 2]; }
         currentCentroid = new Vector3(sumX / count, sumY / count, sumZ / count);
         const sizeX = maxX - minX;
         const sizeY = maxY - minY;
@@ -289,7 +318,7 @@ async function loadSplatSource(source: string | File, displayName: string, fileS
         }
         applyViewerPipeline();
         updateLoadingState(false);
-        showToast(`Loaded ${displayName} (${count.toLocaleString()} splats)`, 'success');
+        if (!pairing) showToast(`Loaded ${displayName} (${count.toLocaleString()} splats)`, 'success');
     } catch (err: any) {
         console.error('Failed to load splat:', err);
         updateLoadingState(false);
@@ -360,6 +389,9 @@ function setupViewer() {
 
         const moved = control.update(delta);
         const walkingMoved = walkingTools?.tick(moved);
+        // Guided walking and the flowing route arrows also need fresh frames.
+        const guided = wayfinding?.frame(delta);
+        if (guided) needsRender = true;
         const active = Boolean(moved || walkingMoved || autoRotate);
         if (active && previousActive && !document.hidden && interval > 0 && interval < 2000) {
             frameIntervals.push(interval);
@@ -566,46 +598,66 @@ function setupUI() {
 }
 
 // Bootstrap
-async function loadRoomManifest(url: URL) {
+async function loadRoomManifest(url: URL, {library = false} = {}) {
     if (url.origin !== location.origin) throw Error('Room manifest must be hosted with this viewer.');
     const response = await fetch(url);
     if (!response.ok) throw Error('Room manifest is unavailable.');
     const manifest = validateViewerManifest(await response.json());
-    await loadSplatSource(new URL(manifest.splat.file, url).href, manifest.title + '.spz',
-        (manifest.splat.bytes / 1024 / 1024).toFixed(1) + ' MB',
-        {title: manifest.title, splatHash: manifest.splat.sha256, splatBytes: manifest.splat.bytes,
+    const pairing = {title: manifest.title, splatHash: manifest.splat.sha256, splatBytes: manifest.splat.bytes, splatParts: manifest.splat.parts,
          collisionUrl: new URL(manifest.collision.file, url).href,
          collisionHash: manifest.collision.sha256, initialView: manifest.initialView,
-         walkingSetup: manifest.walkingSetup});
+         walkingSetup: manifest.walkingSetup};
+    await loadSplatSource(new URL(manifest.splat.file, url).href, manifest.title + '.spz',
+        (manifest.splat.bytes / 1024 / 1024).toFixed(1) + ' MB', pairing);
+    // Places and zones travel with the scene as venue.json. The local scene library always answers for it
+    // (and accepts saves); a packaged site lists it in the manifest when it exists.
+    const venueUrl = library || manifest.venue ? new URL('venue.json', url).href : undefined;
+    await wayfinding.setScene({identity: sceneIdentity(pairing), title: manifest.title, venueUrl,
+        saveUrl: library ? venueUrl : undefined, drafts: studioAllowed});
+    // A scene with a saved walking setup opens straight into the walk: no setup panel, no extra click.
+    if (walkingTools.hasSavedSetup()) {
+        updateLoadingState(true, manifest.title, 'Working out where you can walk');
+        setLoadingProgress(0.98);
+        try {
+            await walkingTools.resumeSaved();
+            // The first frames at the entrance still show the previous depth order; reveal the room once
+            // the renderer has re-sorted for this viewpoint (about a second, measured).
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        } finally { updateLoadingState(false); }
+        wayfinding.arrive();
+    }
+    // Without a saved walking setup the setup tools are needed; with one, the wayfinding view has taken over.
+    document.getElementById('app')?.classList.remove('wf-boot');
 }
 
 async function init() {
     setupViewer();
     setupUI();
-    walkingTools=createWalkingTools({viewer,camera,control,container,
-        dirty:()=>{viewer.getScene().notifySceneChange();needsRender=true;},
+    const dirty = () => { viewer.getScene().notifySceneChange(); needsRender = true; };
+    walkingTools=createWalkingTools({viewer,camera,control,container,dirty,
         onWalkingStart:()=>{autoRotate=false;btnAutoRotate.classList.remove('btn-primary');}});
+    wayfinding = createWayfinding({app: document.getElementById('app') as HTMLElement, container, viewer, camera, control,
+        walk: walkingTools, dirty, toast: showToast, studioAllowed, getSplat: () => currentSplat, getSplatSample: () => splatSample});
+    // Opening a splat file from disk is a development tool; it lives with the corner tools.
+    if (import.meta.env.DEV) { btnUpload.querySelector('svg')?.remove(); wayfinding.adoptTool(btnUpload); }
+    // Local development only: lets browser checks drive the app.
+    if (import.meta.env.DEV) (window as any).__namma = {wayfinding, walkingTools, camera, viewer};
 
     // Load local point_cloud.ply
     updateLoadingState(false);
     fileNameEl.textContent = 'Choose a room file';
     splatCountEl.textContent = '';
     const portable = new URLSearchParams(location.search).get('manifest');
+    const opening = portable || (import.meta.env.DEV && new URLSearchParams(location.search).get('scene'));
+    if (!opening) document.getElementById('app')?.classList.remove('wf-boot');
     if (portable) {
         const roomTools = document.querySelector('.namma-status a') as HTMLElement;
         if (roomTools) roomTools.hidden = true;
         sidebar.classList.add('hidden');
         try {
             await loadRoomManifest(new URL(portable, location.href));
-            if (walkingTools.hasSavedSetup()) {
-                const enter = document.createElement('button');
-                enter.className = 'btn btn-primary'; enter.textContent = 'Enter room';
-                enter.title = 'Start walking from the saved entrance';
-                enter.onclick = () => walkingTools.resumeSaved();
-                document.querySelector('.top-bar-right')?.prepend(enter);
-            }
         }
-        catch (error: any) { showToast(error.message, 'error'); }
+        catch (error: any) { document.getElementById('app')?.classList.remove('wf-boot'); showToast(error.message, 'error'); }
         return;
     }
     if (import.meta.env.DEV) {
@@ -613,7 +665,7 @@ async function init() {
         const list = document.createElement('select');
         list.className = 'btn'; list.setAttribute('aria-label', 'Scene library');
         list.innerHTML = '<option value="">Scene library…</option>';
-        document.querySelector('.top-bar-right')?.prepend(list);
+        wayfinding.adoptTool(list);
         try {
             const response = await fetch('/__scenes');
             if (!response.ok) throw Error('Scene library is unavailable.');
@@ -628,8 +680,8 @@ async function init() {
         if (selected) {
             try {
                 const base = '/__scenes/' + encodeURIComponent(selected);
-                await loadRoomManifest(new URL(base + '/scene.json', location.href));
-            } catch (error: any) { showToast(error.message, 'error'); }
+                await loadRoomManifest(new URL(base + '/scene.json', location.href), {library: true});
+            } catch (error: any) { document.getElementById('app')?.classList.remove('wf-boot'); showToast(error.message, 'error'); }
         } else if (!list.options.length) {
             showToast('No rooms imported yet. Import a trained result first (see viewer/README.md), or use Open File.', 'success');
         }

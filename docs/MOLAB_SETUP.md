@@ -17,9 +17,10 @@ What setup does (`bash molab_setup.sh`, logs in `setup-logs/<time>/`):
 | python | `uv venv --python 3.12` at `.venv`; exact `env/requirements.lock.txt` (Torch 2.11.0+cu130, NumPy 1.26.4, Open3D 0.19.0, pycolmap 4.2.1, PyAV, cuda-toolkit 13.0.2 with nvcc 13.0.88, …) |
 | cuda-environment | `CUDA_HOME` = the venv's `nvidia/cu13`; nvcc must equal Torch's CUDA; arch from this GPU; `MAX_JOBS` from CPUs/RAM |
 | gsplat-source | gsplat at a pinned commit in `/opt/namma-src/gsplat` + `env/patches/gsplat-relocation-sign.patch` (sm_120 fix, upstream PR #1060) |
-| extensions | builds gsplat (reused when toolchain and sources match) |
+| ppisp-source | PPISP at a pinned commit in `/opt/namma-src/ppisp` (Apache-2.0; optional colour model, `train.ppisp`) |
+| extensions | builds gsplat (required) and PPISP (optional), each reused when toolchain and sources match and cached in `/opt/namma-cache` |
 | moge | MoGe-2 + utils3d at pinned commits, `--no-deps` (keeps NumPy 1.26.4) |
-| gpu-checks | `python -m namma check`: environment, torch_cuda, gsplat (render + backward, relocation kernel, depth→normal), pipeline_imports (incl. pycolmap without CUDA), open3d_tsdf |
+| gpu-checks | `python -m namma check`: environment, torch_cuda, gsplat (render + backward, relocation kernel, depth→normal), ppisp (forward, backward and a new-view prediction; passes as not installed when absent), pipeline_imports (incl. pycolmap without CUDA), open3d_tsdf |
 
 ## Part B: reconstruction
 

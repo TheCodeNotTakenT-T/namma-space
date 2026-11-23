@@ -42,8 +42,13 @@ class SfmConfig:
 @dataclass
 class PriorsConfig:
     enabled: bool = True
-    model: str = "Ruicheng/moge-2-vitl-normal"   # MIT code and weights
+    model: str = "Ruicheng/moge-3-vitl"        # MoGe-3: 370M, metric scale + normal (MIT).
+                                               # MoGe-2 fallback: "Ruicheng/moge-2-vitl-normal".
+                                               # namma.priors._load_moge picks the module from the name:
+                                               # "moge-3" -> moge.model.v3, else moge.model.v2.
     resolution_level: int = 9
+    refine_steps: int = 3                      # MoGe-3 only: Self-Guided Sparse 3D Refinement
+                                               # passes. 0 disables refinement (faster, less detail).
     min_points: int = 30         # sparse points needed to trust a frame's depth scale
     image_long_side: int = 1920  # training images are undistorted from the original frames at this size (3840: untested)
     prior_long_side: int = 1920  # MoGe maps are stored at this size; training upsamples them
@@ -56,7 +61,7 @@ STRATEGY_DEFAULTS = {"default": {"init_opacity": 0.1, "init_scale": 1.0, "opacit
 
 @dataclass
 class TrainConfig:
-    steps: int = 30_000
+    steps: int = 40_000     # raised from 30k: 20.7 dB Round 1 was under-trained (audit §7.2 C3, §7.3)
     strategy: str = "mcmc"       # "mcmc" (Round 1 room); "default" = original 3DGS densification (untested on GPU)
     cap_max: int = 1_000_000     # mcmc only: gsplat's default; 3M collapsed to fog on a classroom (cause not yet found)
     max_gaussians: int = 6_000_000  # default only: densification stops here (web viewer limit)
@@ -88,11 +93,11 @@ class TrainConfig:
 @dataclass
 class MeshConfig:
     voxel: float = 0.02          # metres (scene is metric after the priors stage)
-    trunc_voxels: float = 4.0
+    trunc_voxels: float = 6.0   # widened from 4.0: 12 cm band absorbs grazing-view depth disagreement (audit §7.2 C4, §7.3)
     max_depth: float = 12.0
     render_long_side: int = 960
     max_views: int = 400
-    min_alpha: float = 0.5
+    min_alpha: float = 0.3    # lowered from 0.5: includes MCMC semi-transparent fringes in fusion (audit §7.2 C5, §7.3)
     target_triangles: int = 200_000   # viewer limit is 250,000
     min_component_fraction: float = 0.002
 
@@ -136,6 +141,7 @@ def smoke_config():
     cfg.sfm.train_long_side = 960
     cfg.priors.image_long_side = 960
     cfg.priors.prior_long_side = 960
+    cfg.priors.refine_steps = 1   # smoke test: one refinement pass is enough to exercise the SSR path
     cfg.train.steps = 1500
     cfg.train.cap_max = 200_000
     cfg.train.max_gaussians = 200_000
@@ -147,4 +153,4 @@ def smoke_config():
     cfg.mesh.voxel = 0.04
     cfg.mesh.max_views = 60
     cfg.mesh.target_triangles = 50_000
-    return cfg
+    return cfg 

@@ -1,6 +1,10 @@
-import { init, NavMeshQuery } from 'recast-navigation';
+import { init, NavMeshQuery, getNavMeshPositionsAndIndices } from 'recast-navigation';
 import { generateSoloNavMesh } from 'recast-navigation/generators';
 import { Vector3 } from 'three';
+
+// Search boxes (half-width, half-height, half-depth in metres) tried in turn to bring a tagged place to the
+// floor: a point on the floor first, then one on a desk or wall, then one above furniture.
+const REACH = [{ x: 0.4, y: 0.35, z: 0.4 }, { x: 0.9, y: 1.2, z: 0.9 }, { x: 1.8, y: 2.4, z: 1.8 }, { x: 3.5, y: 3, z: 3.5 }];
 
 export async function buildNavigation(root, {fillHoles = true} = {}) {
   await init();
@@ -29,7 +33,51 @@ export async function buildNavigation(root, {fillHoles = true} = {}) {
     walkableRadius: Math.ceil(0.15 / 0.05), minRegionArea: 8, mergeRegionArea: 20,
   });
   if (!result.success) throw new Error('Could not build walking surfaces. Check scale, orientation and floor coverage.');
+  removeIslands(result.navMesh);
   return new Navigation(result.navMesh);
+}
+
+/**
+ * Flat tops of desks, benches and shelves, and specks of reconstruction noise, also come out of Recast as
+ * walkable patches that nobody can reach. Left in, they capture clicks and tagged places ("nearest walkable
+ * point" lands on a desk) and routes to them fail. Keep each connected area that is at least `keepFraction`
+ * of the largest one (so a second storey or a second room survives) and switch the rest off: Detour's
+ * default filter skips polygons whose flags are zero.
+ * Works on single-tile (solo) navmeshes, where a polygon's neighbours are listed in the polygon itself.
+ * @returns {{kept: number, removed: number}} polygon counts
+ */
+export function removeIslands(navMesh, keepFraction = 0.25) {
+  let kept = 0, removed = 0;
+  for (let t = 0; t < navMesh.getMaxTiles(); t++) {
+    const tile = navMesh.getTile(t), count = tile?.header()?.polyCount() ?? 0;
+    if (!count) continue;
+    const component = new Int32Array(count).fill(-1), areas = [];
+    for (let seed = 0; seed < count; seed++) {
+      if (component[seed] !== -1) continue;
+      const id = areas.length, stack = [seed];
+      let area = 0;
+      component[seed] = id;
+      while (stack.length) {
+        const poly = tile.polys(stack.pop()), corners = poly.vertCount();
+        const xs = [], zs = [];
+        for (let c = 0; c < corners; c++) { const v = poly.verts(c) * 3; xs.push(tile.verts(v)); zs.push(tile.verts(v + 2)); }
+        for (let c = 1; c < corners - 1; c++) area += Math.abs((xs[c] - xs[0]) * (zs[c + 1] - zs[0]) - (xs[c + 1] - xs[0]) * (zs[c] - zs[0])) / 2;
+        for (let c = 0; c < corners; c++) {
+          const neighbour = poly.neis(c);
+          if (!neighbour || neighbour & 0x8000) continue;        // 0: outer edge; 0x8000: link to another tile
+          if (component[neighbour - 1] === -1) { component[neighbour - 1] = id; stack.push(neighbour - 1); }
+        }
+      }
+      areas.push(area);
+    }
+    const threshold = Math.max(...areas) * keepFraction, base = navMesh.getPolyRefBase(tile);
+    for (let i = 0; i < count; i++) {
+      if (areas[component[i]] >= threshold) { kept++; continue; }
+      navMesh.setPolyFlags(base | i, 0);
+      removed++;
+    }
+  }
+  return { kept, removed };
 }
 
 // Reconstructions leave holes in the floor where it was poorly filmed, and a hole stops the walker. Lay a flat
@@ -72,6 +120,28 @@ export class Navigation {
     // Detour may return a partial path to an unreachable island. Never present that as success.
     if (!r.success || !r.path.length || new Vector3().copy(r.path.at(-1)).distanceTo(target.point) > 0.12) return null;
     return r.path.map(p => new Vector3().copy(p));
+  }
+  /**
+   * The walkable spot from which a tagged place is reached: the place itself when it lies on the floor,
+   * otherwise the nearest floor beside it (a whiteboard on a wall, a projector above the desks).
+   * Returns {point, polyRef} or null when no floor lies within 3.5 m.
+   */
+  target(point) {
+    for (const halfExtents of REACH) {
+      const r = this.query.findClosestPoint(point, { halfExtents });
+      if (r.success && r.polyRef) return { point: new Vector3().copy(r.point), polyRef: r.polyRef };
+    }
+    return null;
+  }
+  /** Route from a walkable start to a tagged place. Returns the path points, or null when unreachable. */
+  routeTo(start, place) {
+    const target = this.target(place);
+    return target ? this.route(start, target.point) : null;
+  }
+  /** Triangles of the reachable walkable area {positions, indices}, for the minimap and clearance measurements. */
+  walkableMesh() {
+    const [positions, indices] = getNavMeshPositionsAndIndices(this.mesh, 1);
+    return { positions, indices };
   }
   move(state, delta) {
     // Small local steps keep moveAlongSurface from bridging disconnected surfaces.

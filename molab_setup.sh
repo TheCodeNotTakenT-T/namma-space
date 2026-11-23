@@ -17,14 +17,33 @@ cd "$REPO_ROOT"
 # ---- Pinned inputs ---------------------------------------------------------------------------
 PYTHON_VERSION=3.12
 MIN_DRIVER_CUDA=13.0                          # Torch 2.11.0+cu130 runtime
+MIN_GLIBC=2.35                                # manylinux_2_35 pycolmap wheel
 GSPLAT_URL=https://github.com/nerfstudio-project/gsplat.git
 GSPLAT_COMMIT=512d366b67073d77ca099ede742683c165dfc23b   # main, 19 Sep 2026 (1.6.0 dev; CUDA 13 support)
 GSPLAT_DIR=/opt/namma-src/gsplat              # outside /marimo: a molab restart cannot half-restore it
 CACHE_DIR=/opt/namma-cache                    # compiled gsplat by build signature; the notebook syncs it with Drive
+WHEEL_DIR=/opt/namma-wheels                   # downloaded third-party wheels; deliberately NOT in the Drive-synced cache
 # Published compiled builds: <base>/gsplat-<signature>.tar + .tar.sha256 (GitHub release assets).
 PREBUILT_BASE="${NAMMA_PREBUILT_BASE:-https://github.com/TheCodeNotTakenT-T/namma-space/releases/download/gsplat-prebuilt}"
-MOGE_COMMIT=74fbce054ebed49800de42d0ad0e83495065719a     # microsoft/MoGe (MIT), MoGe-2 model used
-UTILS3D_COMMIT=62f09d58509485564e24d5d9f6aac9ee9ebc0c37  # pinned by MoGe's pyproject
+# pycolmap with GPU SIFT/matching: third-party build (lyehe/build_gpu_colmap, upstream COLMAP 4.2.0) with the
+# CUDA 13.0 runtime bundled in the wheel. Not in the lock file: the PyPI pycolmap-cuda12 wheel needs
+# cuda-toolkit<13, which conflicts with the cuda-toolkit==13.0.2 pin used to build gsplat.
+PYCOLMAP_TAG=v4.2.0-3
+PYCOLMAP_WHEEL='pycolmap-4.2.0+cu130.bundled-cp312-cp312-manylinux_2_35_x86_64.whl'
+PYCOLMAP_SHA256=0f455e61c167e027b1d76ee4364fcadf06a45f51691ff28ff4103c1471f8a8a3
+PYCOLMAP_VERSION='4.2.0+cu130.bundled'
+PYCOLMAP_BASE=https://github.com/lyehe/build_gpu_colmap/releases/download
+PPISP_URL=https://github.com/nv-tlabs/ppisp.git
+PPISP_COMMIT=a247368047651db2e03e6f97a36e4f5bebbe5c5f    # nv-tlabs/ppisp (Apache-2.0), 23 Sep 2026: optional colour model
+PPISP_DIR=/opt/namma-src/ppisp
+# MoGe: the pinned commit 74fbce0 IS the V3 release ("V3 (#158)", 19 Aug 2026) and ships
+# moge.model.v1/v2/v3 in one tree. MoGe-3 adds a flex-gemm dependency (JeffreyXiang/FlexGEMM) and
+# declares numpy>=2 in its pyproject; install_moge installs both with --no-deps to keep NumPy 1.26.4
+# (the lock pin, required by the open3d/pycolmap wheels). Runtime compatibility is verified by
+# `python -m namma check` (pipeline_imports asserts flex_gemm + moge.model.v3 import).
+MOGE_COMMIT=74fbce054ebed49800de42d0ad0e83495065719a      # microsoft/MoGe (MIT) -- the "V3 (#158)" commit; ships v1/v2/v3
+UTILS3D_COMMIT=62f09d58509485564e24d5d9f6aac9ee9ebc0c37   # unchanged: the same pin MoGe-3's pyproject asks for
+FLEXGEMM_COMMIT=b2fadb29d41846c7981ade6801ffc689fae119cf  # JeffreyXiang/FlexGEMM -- new in MoGe-3 (pip name: flex-gemm)
 VENV="${NAMMA_VENV:-$REPO_ROOT/.venv}"
 VENV_PY="$VENV/bin/python"
 
@@ -72,7 +91,7 @@ step() {  # step <name> <function>: run, time and record one setup stage
 preflight() {
     [[ "$(uname -s)" == Linux ]] || { echo "Run this on the Linux GPU machine."; exit 1; }
     command -v nvidia-smi >/dev/null || { echo "nvidia-smi missing: select a GPU runtime."; exit 1; }
-    for tool in git gcc curl tar flock; do
+    for tool in git gcc curl tar flock sha256sum; do
         command -v "$tool" >/dev/null || { echo "Missing required tool: $tool"; exit 1; }
     done
     nvidia-smi | tee "$LOG_DIR/nvidia-smi.txt"
@@ -81,12 +100,40 @@ preflight() {
     if [[ "$(printf '%s\n%s\n' "$MIN_DRIVER_CUDA" "$driver_cuda" | sort -V | sed -n 1p)" != "$MIN_DRIVER_CUDA" ]]; then
         echo "Driver supports CUDA $driver_cuda; Torch cu130 needs $MIN_DRIVER_CUDA or newer."; exit 1
     fi
+    local glibc
+    glibc="$(ldd --version | sed -n 1p | grep -o '[0-9][0-9.]*$')"
+    if [[ "$(printf '%s\n%s\n' "$MIN_GLIBC" "$glibc" | sort -V | sed -n 1p)" != "$MIN_GLIBC" ]]; then
+        echo "glibc $glibc is older than $MIN_GLIBC, which the pycolmap manylinux_2_35 wheel needs."; exit 1
+    fi
     if ! command -v uv >/dev/null; then
         python3 -m pip install --quiet uv
     fi
     { uv --version; gcc --version | sed -n 1p; ldd --version | sed -n 1p; git -C "$REPO_ROOT" rev-parse HEAD
       git -C "$REPO_ROOT" status --short; echo "cpus=$(nproc)"; free -g; df -h "$REPO_ROOT" "$HOME"; } \
         | tee "$LOG_DIR/host.txt"
+}
+
+install_pycolmap() {  # pinned third-party CUDA wheel (bundled CUDA 13 runtime), verified by checksum
+    if "$VENV_PY" -c "import importlib.metadata as m, sys; sys.exit(m.version('pycolmap') != '$PYCOLMAP_VERSION')" 2>/dev/null; then
+        echo "pycolmap $PYCOLMAP_VERSION already installed."
+        return
+    fi
+    local wheel="$WHEEL_DIR/$PYCOLMAP_WHEEL"
+    local url="$PYCOLMAP_BASE/$PYCOLMAP_TAG/${PYCOLMAP_WHEEL//+/%2B}"
+    mkdir -p "$WHEEL_DIR"
+    if [[ ! -f "$wheel" ]]; then
+        echo "Downloading $PYCOLMAP_WHEEL"
+        curl -fsSL --retry 3 "$url" -o "$wheel.part" || { rm -f "$wheel.part"; echo "pycolmap wheel download failed: $url"; exit 1; }
+        mv "$wheel.part" "$wheel"
+    fi
+    if [[ "$(sha256sum "$wheel" | cut -d' ' -f1)" != "$PYCOLMAP_SHA256" ]]; then
+        rm -f "$wheel"
+        echo "pycolmap wheel failed its SHA-256 check (expected $PYCOLMAP_SHA256); deleted it. Rerun to download again."
+        exit 1
+    fi
+    # The CPU pycolmap and PyPI pycolmap-cuda12 wheels share the pycolmap/ directory: remove them first.
+    uv pip uninstall --python "$VENV_PY" pycolmap pycolmap-cuda12 2>/dev/null || true
+    uv pip install --python "$VENV_PY" --no-deps "$wheel"
 }
 
 install_python() {
@@ -101,6 +148,7 @@ install_python() {
     fi
     [[ -x "$VENV_PY" ]] || uv venv --python "$PYTHON_VERSION" --seed "$VENV"
     uv pip install --python "$VENV_PY" --index-strategy unsafe-best-match -r env/requirements.lock.txt
+    install_pycolmap
     uv pip freeze --python "$VENV_PY" > "$LOG_DIR/pip-freeze.txt"
 }
 
@@ -186,13 +234,30 @@ fetch_gsplat() {
     git -C "$dir" diff --stat
 }
 
-install_moge() {  # pure Python; --no-deps keeps NumPy 1.26.4 (MoGe 3.0's pyproject asks for numpy>=2)
-    local stamp="$VENV/.namma-builds/moge" want="$MOGE_COMMIT $UTILS3D_COMMIT"
-    if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" ]] && "$VENV_PY" -c "import moge.model.v2, utils3d_moge" 2>/dev/null; then
-        echo "MoGe already installed at the pinned commits."
+fetch_ppisp() {  # scratch copy of the pinned upstream source, like gsplat's
+    if [[ "$(git -C "$PPISP_DIR" rev-parse HEAD 2>/dev/null)" != "$PPISP_COMMIT" ]]; then
+        rm -rf "$PPISP_DIR"
+        mkdir -p "$PPISP_DIR"
+        git -C "$PPISP_DIR" init -q
+        git -C "$PPISP_DIR" fetch -q --depth 1 "$PPISP_URL" "$PPISP_COMMIT"
+        git -C "$PPISP_DIR" checkout -q --detach FETCH_HEAD
+    fi
+    git -C "$PPISP_DIR" log -1 --format='ppisp %H %cd'
+}
+
+install_moge() {  # pure Python; --no-deps keeps NumPy 1.26.4 (MoGe-3's pyproject asks for numpy>=2)
+    # Stamps cover all three commits (moge + utils3d_moge + flex-gemm) so a pin change reinstalls.
+    local stamp="$VENV/.namma-builds/moge" want="$MOGE_COMMIT $UTILS3D_COMMIT $FLEXGEMM_COMMIT"
+    if [[ -f "$stamp" && "$(cat "$stamp")" == "$want" ]] && "$VENV_PY" -c "import moge.model.v3, utils3d_moge" 2>/dev/null \
+            && "$VENV_PY" -c "import importlib.util as u; assert u.find_spec('flex_gemm') or u.find_spec('flexgemm')" 2>/dev/null; then
+        echo "MoGe (v3) already installed at the pinned commits."
         return
     fi
-    if ! "$VENV_PY" -m pip install --no-deps --no-cache-dir --force-reinstall             "moge @ git+https://github.com/microsoft/MoGe.git@$MOGE_COMMIT"             "utils3d_moge @ git+https://github.com/EasternJournalist/utils3d-moge.git@$UTILS3D_COMMIT"             > "$LOG_DIR/install-moge.log" 2>&1; then
+    if ! "$VENV_PY" -m pip install --no-deps --no-cache-dir --force-reinstall \
+            "moge @ git+https://github.com/microsoft/MoGe.git@$MOGE_COMMIT" \
+            "utils3d_moge @ git+https://github.com/EasternJournalist/utils3d-moge.git@$UTILS3D_COMMIT" \
+            "flex-gemm @ git+https://github.com/JeffreyXiang/FlexGEMM.git@$FLEXGEMM_COMMIT" \
+            > "$LOG_DIR/install-moge.log" 2>&1; then
         tail -n 30 "$LOG_DIR/install-moge.log"; echo "MoGe install failed."; exit 1
     fi
     mkdir -p "$VENV/.namma-builds"
@@ -243,7 +308,7 @@ build_one() {  # build_one <name> <path> <required:1|0>
     if [[ $REBUILD == 0 && -f "$stamps/$name" && "$(cat "$stamps/$name")" == "$sig" ]]; then
         echo "$name: cached build matches toolchain and sources."
         printf 'build:%s\tcached\n' "$name" >> "$TIMINGS"
-        [[ $name != gsplat ]] || save_cache gsplat "$sig"
+        save_cache "$name" "$sig"
         return
     fi
     if [[ $REBUILD == 0 && $name == gsplat && ! -f "$CACHE_DIR/$name-$sig.tar" ]]; then
@@ -263,7 +328,7 @@ build_one() {  # build_one <name> <path> <required:1|0>
             > "$LOG_DIR/build-$name.log" 2>&1; then
         echo "$sig" > "$stamps/$name"
         printf 'build:%s\t%s\n' "$name" "$((SECONDS - started))" >> "$TIMINGS"
-        [[ $name != gsplat ]] || save_cache gsplat "$sig"
+        save_cache "$name" "$sig"
     else
         printf 'build:%s\tfailed\n' "$name" >> "$TIMINGS"
         tail -n 40 "$LOG_DIR/build-$name.log"
@@ -276,6 +341,7 @@ build_one() {  # build_one <name> <path> <required:1|0>
 
 build_extensions() {
     build_one gsplat "$GSPLAT_DIR" 1
+    build_one ppisp "$PPISP_DIR" 0   # optional: only train.ppisp needs it
     uv pip freeze --python "$VENV_PY" > "$LOG_DIR/pip-freeze-after-build.txt"
 }
 
@@ -291,7 +357,8 @@ fi
 step cuda-environment cuda_environment
 if [[ $MODE == full ]]; then
     step gsplat-source fetch_gsplat
+    step ppisp-source fetch_ppisp
     step extensions build_extensions
     step moge install_moge
 fi
-step gpu-checks gpu_checks
+step gpu-checks gpu_checks 

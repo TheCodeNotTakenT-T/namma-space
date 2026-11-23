@@ -168,6 +168,148 @@ def setup_passed(repo):
     return read_json(logs / latest / "report.json").get("overall") == "pass" if latest else False
 
 
+
+
+@app.function
+def gpu_free_vram_mib():
+    """Free GPU VRAM in MiB, or None if nvidia-smi is unavailable (e.g. CPU-only dev box)."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=5)
+        return int(out.stdout.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
+@app.function
+def default_sweep_grid():
+    """Sensible 4-variant sweep covering the audit's recommendations and the baseline.
+
+    Each entry: {"name": str, "settings": {section: {key: value}}, "fork_after": stage}.
+    `fork_after` is the stage whose outputs are cloned (hardlinked) from the canonical job;
+    later stages re-run with the variant's settings. Variants that only differ in train/mesh
+    use "priors"; variants that change priors.image_long_side use "sfm".
+    """
+    return [
+        {"name": "baseline",    "settings": {},                                                                              "fork_after": "priors"},
+        {"name": "more-steps",  "settings": {"train": {"steps": 60000}},                                                    "fork_after": "priors"},
+        {"name": "loose-alpha", "settings": {"mesh": {"min_alpha": 0.3, "trunc_voxels": 6.0}},                              "fork_after": "priors"},
+        {"name": "recommended", "settings": {"train": {"steps": 60000}, "mesh": {"min_alpha": 0.3, "trunc_voxels": 6.0}},   "fork_after": "priors"},
+    ]
+
+
+@app.function
+def _clone_stage_outputs(src, dst, stage):
+    """Hardlink every file under <src>/<stage>/ into <dst>/<stage>/."""
+    s = src / stage
+    if not s.exists():
+        return
+    d = dst / stage
+    if d.exists():
+        shutil.rmtree(d)
+    shutil.copytree(s, d, copy_function=os.link)
+
+
+@app.function
+def clone_job_for_variant(canonical_job, variant_job, fork_after):
+    """Fork the canonical job's upstream stages into a new variant job directory.
+
+    Clones (via hardlinks) the frames / sfm / dataset / priors folders and copies the
+    matching stage receipts so that Workspace.is_done returns True for the upstream stages
+    and only train+mesh+export re-run with the variant's settings. Hardlinks are cheap on
+    the same filesystem and survive if the canonical job is later deleted.
+    """
+    # Map fork_after -> (directories to clone, stages whose receipts to copy)
+    plan = {
+        "frames": (["frames"],                   ["frames"]),
+        "sfm":    (["frames", "sfm"],            ["frames", "sfm"]),
+        "priors": (["frames", "sfm", "dataset", "priors"], ["frames", "sfm", "priors"]),
+    }
+    clone_dirs, receipt_stages = plan.get(fork_after, plan["priors"])
+    src = Path(canonical_job)
+    dst = Path(variant_job)
+    dst.mkdir(parents=True, exist_ok=True)
+    for sub in clone_dirs:
+        _clone_stage_outputs(src, dst, sub)
+    # Receipts
+    (dst / "stages").mkdir(parents=True, exist_ok=True)
+    for s in receipt_stages:
+        r = src / "stages" / f"{s}.json"
+        if r.exists():
+            shutil.copy2(r, dst / "stages" / f"{s}.json")
+    # The input video (hardlinked) so the variant can re-derive its job identity if asked
+    if (src / "input").exists() and not (dst / "input").exists():
+        shutil.copytree(src / "input", dst / "input", copy_function=os.link, dirs_exist_ok=True)
+    # job.json copied; the caller overrides train/mesh/etc. on top
+    if not (dst / "job.json").exists() and (src / "job.json").exists():
+        shutil.copy2(src / "job.json", dst / "job.json")
+
+
+@app.function
+def override_job_settings(job_dir, overrides):
+    """Rewrite job.json's config section with the variant's settings overrides."""
+    p = Path(job_dir) / "job.json"
+    data = json.loads(p.read_text())
+    for section, values in (overrides or {}).items():
+        data.setdefault("config", {}).setdefault(section, {}).update(values)
+    p.write_text(json.dumps(data, indent=2))
+
+
+@app.function
+def variant_job_dir(canonical_job, variant_name):
+    """Sibling folder named <canonical_id>__<variant_name>."""
+    canon = Path(canonical_job)
+    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in variant_name)
+    return str(canon.parent / f"{canon.name}__{safe}")
+
+
+@app.function
+def launch_variant(venv_python, repo, variant_job):
+    """Start `python -m namma run --job <variant_job>` as a detached subprocess."""
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONSAFEPATH", "PYTHONHOME")}
+    env["PYTHONPATH"] = repo
+    log = open(Path(variant_job) / "logs" / "sweep-run.log", "ab")
+    return subprocess.Popen([venv_python, "-m", "namma", "run", "--job", variant_job],
+                            cwd=repo, env=env, stdin=subprocess.DEVNULL, stdout=log,
+                            stderr=subprocess.STDOUT, start_new_session=True)
+
+
+@app.function
+def _one_job_status(job_dir, label, kind):
+    job = read_json(job_dir / "job.json")
+    if not job:
+        return []
+    cfg = job.get("config", {})
+    train = cfg.get("train", {}); mesh = cfg.get("mesh", {})
+    status = read_json(job_dir / "status.json")
+    ev = read_json(job_dir / "train" / "eval.json")
+    mesh_receipt = read_json(job_dir / "stages" / "mesh.json")
+    mesh_metrics = mesh_receipt.get("metrics", {}) if mesh_receipt else {}
+    return [{
+        "kind": kind, "variant": label, "state": status.get("state", "?"),
+        "stage": status.get("stage") or "-", "progress": status.get("progress"),
+        "steps": train.get("steps"), "cap_max": train.get("cap_max"),
+        "min_alpha": mesh.get("min_alpha"), "trunc_voxels": mesh.get("trunc_voxels"),
+        "psnr": ev.get("psnr"), "ssim": ev.get("ssim"),
+        "gaussians": ev.get("gaussians"),
+        "triangles": mesh_metrics.get("triangles"),
+        "components_dropped": mesh_metrics.get("components_dropped"),
+    }]
+
+
+@app.function
+def sweep_status_rows(jobs_root, canonical_job):
+    """Collect status rows for the canonical job + every variant (siblings named <canon>__*)."""
+    rows = []
+    canon = Path(canonical_job)
+    if canon.exists():
+        rows.extend(_one_job_status(canon, canon.name, "canonical"))
+    for d in sorted(Path(jobs_root).glob(f"{canon.name}__*")):
+        if d.is_dir() and (d / "job.json").exists():
+            rows.extend(_one_job_status(d, d.name, "variant"))
+    return rows
+
+
 @app.cell
 def _():
     mo.md("""
@@ -388,6 +530,144 @@ def _(jobs_root, show_downloads):
         _out = mo.md("No finished result yet.")
     _out
     return
+
+
+@app.cell
+def _():
+    mo.md("""
+    ## Hyperparameter sweep
+
+    After the canonical job (above) finishes its **priors** stage, fork it into N variants
+    that share the upstream stages (`frames` / `sfm` / `priors` — hardlinked, no extra disk)
+    and only re-run **train + mesh + export** with different settings. Each variant is a
+    separate `python -m namma run --job <variant>` process; the RTX PRO 6000 (96 GiB VRAM)
+    fits 3–4 train jobs in parallel. Re-click **Start / continue sweep** to launch the next
+    batch when slots free up.
+
+    The default grid covers the audit's recommendations and the baseline. Edit the JSON to
+    add your own variants (e.g. `cap_max=1.5M`, `strategy="default"`, `image_long_side=3840`).
+    For variants that change `priors.*` settings, set `"fork_after": "sfm"` so the `priors`
+    stage re-runs with the new value.
+    """)
+    return
+
+
+@app.cell
+def _():
+    import json as _json
+    sweep_grid_text = mo.ui.text_area(
+        value=_json.dumps(default_sweep_grid(), indent=2),
+        label="Sweep grid (JSON list of {name, settings, fork_after})",
+        full_width=True,
+    )
+    max_parallel = mo.ui.slider(1, 6, value=3, label="Max parallel variant jobs")
+    min_vram_mib = mo.ui.slider(8000, 20000, value=12000, step=1000,
+                                label="Min free VRAM (MiB) before launching another variant")
+    start_sweep = mo.ui.run_button(label="Start / continue sweep")
+    mo.vstack([sweep_grid_text, max_parallel, min_vram_mib, start_sweep])
+    return max_parallel, min_vram_mib, start_sweep, sweep_grid_text
+
+
+@app.cell
+def _(jobs_root, max_parallel, min_vram_mib, start_sweep, sweep_grid_text, workspace):
+    mo.stop(not start_sweep.value)
+    _repo = Path(workspace.value)
+    _venv = _repo / ".venv" / "bin" / "python"
+    _driver = read_json(Path(jobs_root.value) / "driver_status.json")
+    _canon = _driver.get("job")
+    _problems = []
+    if not _canon or not Path(_canon).exists():
+        _problems.append("Click **3. Start / resume reconstruction** first so a canonical job exists.")
+    elif not (Path(_canon) / "stages" / "priors.json").exists():
+        _problems.append("Wait for the canonical job to finish the `priors` stage before forking variants.")
+    if not _venv.exists():
+        _problems.append("Run setup (section 2) first.")
+    try:
+        _grid = json.loads(sweep_grid_text.value) if sweep_grid_text.value else []
+        if not isinstance(_grid, list) or not _grid:
+            _problems.append("Sweep grid must be a non-empty JSON list.")
+        for i, v in enumerate(_grid):
+            if not isinstance(v, dict) or "name" not in v or "settings" not in v:
+                _problems.append(f"Sweep grid entry {i} must have `name` and `settings`.")
+    except ValueError as e:
+        _problems.append(f"Sweep grid is not valid JSON: {e}")
+    if _problems:
+        _out = mo.md("\n".join(f"- {p}" for p in _problems))
+    else:
+        _launched, _running, _skipped = [], 0, []
+        for _v in _grid:
+            _vname = _v["name"]
+            _vjob = variant_job_dir(_canon, _vname)
+            _status = read_json(Path(_vjob) / "status.json") if Path(_vjob).exists() else {}
+            if _status.get("state") == "running":
+                _running += 1
+                _skipped.append(f"{_vname} (running)")
+                continue
+            if _status.get("state") == "finished":
+                _skipped.append(f"{_vname} (done)")
+                continue
+            if not Path(_vjob).exists():
+                clone_job_for_variant(_canon, _vjob, _v.get("fork_after", "priors"))
+                override_job_settings(_vjob, _v.get("settings", {}))
+            if _running >= max_parallel.value:
+                _skipped.append(f"{_vname} (queued: max_parallel reached)")
+                continue
+            free = gpu_free_vram_mib()
+            if free is not None and free < min_vram_mib.value:
+                _skipped.append(f"{_vname} (queued: only {free:,} MiB VRAM free)")
+                continue
+            launch_variant(str(_venv), str(_repo), _vjob)
+            _launched.append(_vname)
+            _running += 1
+        _msg = [f"**Launched {len(_launched)}** variant(s): {', '.join(_launched) or 'none'}."]
+        if _skipped:
+            _msg.append(f"Skipped: {'; '.join(_skipped)}.")
+        if _running < len(_grid):
+            _msg.append("Click **Start / continue sweep** again to launch the next batch.")
+        _out = mo.md("  \n".join(_msg))
+    _out
+    return
+
+
+@app.cell
+def _(jobs_root, refresh):
+    refresh
+    _driver = read_json(Path(jobs_root.value) / "driver_status.json")
+    _canon = _driver.get("job")
+    if not _canon:
+        _out = mo.md("No canonical job yet — start the reconstruction in section 3 first.")
+    else:
+        _rows = sweep_status_rows(jobs_root.value, _canon)
+        if not _rows:
+            _out = mo.md("Canonical job exists but has no status yet.")
+        else:
+            _best_psnr, _best_name = -1.0, None
+            for r in _rows:
+                if r.get("psnr") and r["psnr"] > _best_psnr:
+                    _best_psnr, _best_name = r["psnr"], r["variant"]
+            _lines = [
+                "| variant | kind | state | stage | steps | min_a | trunc | PSNR | SSIM | Gaussians | triangles | dropped |",
+                "|---------|------|-------|-------|-------|-------|-------|------|------|-----------|-----------|---------|",
+            ]
+            for r in _rows:
+                _star = " **\u2605**" if r["variant"] == _best_name and r.get("psnr") else ""
+                _psnr = f"{r['psnr']:.2f}" if r.get("psnr") is not None else "-"
+                _ssim = f"{r['ssim']:.4f}" if r.get("ssim") is not None else "-"
+                _g = f"{r['gaussians']:,}" if r.get("gaussians") else "-"
+                _t = f"{r['triangles']:,}" if r.get("triangles") else "-"
+                _ma = r["min_alpha"] if r.get("min_alpha") is not None else "-"
+                _tv = r["trunc_voxels"] if r.get("trunc_voxels") is not None else "-"
+                _cd = r.get("components_dropped") if r.get("components_dropped") is not None else "-"
+                _lines.append(
+                    f"| {r['variant']}{_star} | {r['kind']} | {r['state']} | {r['stage']} | "
+                    f"{r.get('steps') or '-'} | {_ma} | {_tv} | {_psnr} | {_ssim} | {_g} | {_t} | {_cd} |"
+                )
+            _free = gpu_free_vram_mib()
+            _vram_line = f"\n\nFree VRAM: **{_free:,} MiB**" if _free is not None else ""
+            _out = mo.md("\n".join(_lines) + _vram_line + "\n\n\u2605 = best held-out PSNR so far. Click the refresh button above to update.")
+    _out
+    return
+
 
 
 if __name__ == "__main__":

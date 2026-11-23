@@ -3,6 +3,8 @@ import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 import {BufferGeometry, BufferAttribute, Mesh, MeshBasicMaterial, Color, Raycaster, Vector2, Vector3 as ViewVector3} from '@manycore/aholo-viewer';
 import {buildNavigation} from '../src/navigation.js';
 import {floorAlignment} from '../src/scene-alignment.js';
+import {TriangleBVH} from '../src/bvh.js';
+import {cameraBasis, screenRay} from '../src/projection.js';
 import {WALK_PROFILE, sceneIdentity, validateWalk, loadWalk, saveWalk} from './saved-walk.js';
 
 // Render in raw reconstruction coordinates; transform only navigation queries to metres/Y-up.
@@ -39,16 +41,20 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
   let generation=0, recovered=false, savedControls=null, eyeHeight=1.65;
   let measurement=null, savedSetup=null, restoring=false;
   let previousCameraMode=null;
+  let surface=null; // TriangleBVH over the collision mesh (reconstruction coordinates) for fast ray queries
+  // Observers (the wayfinding layer) hear 'walk-start', 'walk-stop', 'move' and 'surfaces'.
+  const listeners=new Set();
+  const emit=type=>{for(const listener of listeners)listener(type);};
   const raycaster=new Raycaster();
   const canvas=panel.querySelector('canvas'),ctx=canvas.getContext('2d');
   const mapBase=document.createElement('canvas');mapBase.width=240;mapBase.height=180;
   const mapCtx=mapBase.getContext('2d');let mapDirty=true,lastMapTime=0;
-  function pause(){state=null;button('pause').disabled=true;button('level').disabled=true;button('save').disabled=true;control.stop();if(savedControls){Object.assign(control,savedControls);savedControls=null;}if(previousCameraMode!==null){document.getElementById('select-camera-mode').value=previousCameraMode;previousCameraMode=null;}setWalkStatus(false);}
+  function pause(){const wasWalking=Boolean(state);if(wasWalking)emit('walk-stop');state=null;button('pause').disabled=true;button('level').disabled=true;button('save').disabled=true;control.stop();if(savedControls){Object.assign(control,savedControls);savedControls=null;}if(previousCameraMode!==null){document.getElementById('select-camera-mode').value=previousCameraMode;previousCameraMode=null;}setWalkStatus(false);}
   function setWalkStatus(active){const label=document.getElementById('walk-status');if(label)label.textContent=active?'Experimental walking · Scale uses the supplied measurement.':'Explore the reconstruction · Open Walking setup to enter.';}
   function invalidate(){generation++;pause();navigation?.dispose();navigation=null;button('spawn').disabled=true;field('review').checked=false;}
   function clear(){generation++;invalidate();for(const mesh of drawables){viewer.getScene().remove(mesh);mesh.freeAllGpuResourceOwned?.();}drawables=[];
     root?.traverse(o=>{o.geometry?.dispose();if(o.material){for(const m of [o.material].flat())m.dispose?.();}});
-    control.enabled=true;root=null;alignment=null;scale=null;measurement=null;mode=null;picks=[];mapPoints=[];bounds=null;mapDirty=true;drawMap();
+    control.enabled=true;root=null;surface=null;alignment=null;scale=null;measurement=null;mode=null;picks=[];mapPoints=[];bounds=null;mapDirty=true;drawMap();
     for(const name of ['floor','measure','build'])button(name).disabled=true;dirty();}
   function setSource(scene){clear();recovered=scene;button('load').disabled=!scene;
     field('distance').value='';
@@ -73,12 +79,22 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
       const parsed=await new GLTFLoader().parseAsync(bytes,'');
       if(token!==generation)return false;
       root=parsed.scene;root.updateMatrixWorld(true);
+      const parts=[];
       root.traverse(o=>{if(!o.isMesh)return;const g=o.geometry.clone();g.applyMatrix4(o.matrixWorld);
+        parts.push({positions:new Float32Array(g.attributes.position.array),index:g.index?new Uint32Array(g.index.array):null});
         const geometry=new BufferGeometry();geometry.setAttribute('position',new BufferAttribute(new Float32Array(g.attributes.position.array),3));
         if(g.index)geometry.setIndex(new Uint32Array(g.index.array));
         const material=new MeshBasicMaterial({color:new Color(0.15,0.85,0.65),side:2});
         const mesh=new Mesh(geometry,material);mesh.visible=field('overlay').checked;viewer.getScene().add(mesh);drawables.push(mesh);g.dispose();});
+      // One ray-query tree over all collision triangles (clicks on places, labels hidden behind walls).
+      const vertexCount=parts.reduce((n,p)=>n+p.positions.length/3,0),triangleCount=parts.reduce((n,p)=>n+(p.index?p.index.length:p.positions.length/3)/3,0);
+      const merged=new Float32Array(vertexCount*3),mergedIndex=new Uint32Array(triangleCount*3);let vAt=0,iAt=0;
+      for(const p of parts){const count=p.positions.length/3;merged.set(p.positions,vAt*3);
+        if(p.index){for(let i=0;i<p.index.length;i++)mergedIndex[iAt++]=p.index[i]+vAt;}else{for(let i=0;i<count;i++)mergedIndex[iAt++]=i+vAt;}
+        vAt+=count;}
+      surface=new TriangleBVH(merged,mergedIndex);
       button('floor').disabled=false;button('measure').disabled=false;dirty();say('Green surfaces are estimates. Pick three widely spaced points on the actual floor.');
+      emit('surfaces');
       return true;
     }catch(e){say(e.message);return false;}
   }
@@ -118,7 +134,9 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
   button('pause').onclick=()=>{pause();say('Walking paused.');};
   button('level').onclick=()=>{upright(true);dirty();};
   field('eye').onchange=()=>{const value=Number(field('eye').value);if(!Number.isFinite(value)||value<1.2||value>1.7){field('eye').value=String(eyeHeight);say('Choose an eye height between 1.2 and 1.7 metres. Check measured scale if furniture still looks too large.');return;}eyeHeight=value;placeCamera();if(state)persist();dirty();};
-  window.addEventListener('keydown',event=>{if(event.key==='Escape'){pause();finish('Selection/walking paused.');}});
+  // Escape cancels a pick in progress. Walking itself is paused only with its button, so a visitor who
+  // presses Escape to close a panel is not dropped out of the room.
+  window.addEventListener('keydown',event=>{if(event.key==='Escape'&&mode)finish('Selection cancelled.');});
   field('distance').oninput=()=>{scale=null;measurement=null;invalidate();button('build').disabled=true;};
   field('review').onchange=()=>{if(!field('review').checked)pause();button('spawn').disabled=!navigation||!field('review').checked;};
   async function build(){
@@ -136,6 +154,11 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
     }catch(e){say(e.message);return false;}finally{button('build').disabled=!(alignment&&scale);}
   }
   button('build').onclick=build;
+  // The renderer re-sorts splats by depth when the camera has moved far enough or the scene is marked
+  // changed, but drops the request while a sort is already running. After the camera is placed somewhere
+  // new in one step (entering, jumping to a place) that can leave the old order on screen as a dark smear
+  // until the next movement (seen in 3 of 5 loads). Marking the scene changed a few more times closes the gap.
+  function resort(){for(const ms of [120,400,900,1800])setTimeout(dirty,ms);}
   function beginWalk(nearest, forward=null){
     // Keep the collision geometry for navigation, but do not draw its debug layer while walking.
     field('overlay').checked=false;drawables.forEach(m=>m.visible=false);
@@ -146,7 +169,7 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
     placeCamera();
     if(forward)camera.lookAt(new ViewVector3(camera.position.x+forward[0],camera.position.y+forward[1],camera.position.z+forward[2]));
     upright(!forward);button('pause').disabled=false;button('level').disabled=false;button('save').disabled=!sceneIdentity(recovered);
-    drawMap();setWalkStatus(true);dirty();
+    drawMap();setWalkStatus(true);dirty();resort();emit('walk-start');
   }
   function persist(){
     if(!state||!sceneIdentity(recovered))return;
@@ -179,7 +202,7 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
       field('saved').textContent='Matching setup loaded. Choose Enter saved walking setup to rebuild and check the entrance.';
     }catch(e){say(e.message);}
   };
-  button('resume').onclick=async()=>{
+  const resume=async()=>{
     if(!savedSetup||restoring)return;
     const saved=validateWalk(savedSetup,recovered);restoring=true;button('resume').disabled=true;
     try{
@@ -198,6 +221,7 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
       beginWalk(nearest,saved.forward);say('Saved walking setup restored. WASD to walk; drag to look; Escape pauses.');
     }catch(e){say(e.message);}finally{restoring=false;button('resume').disabled=!savedSetup;}
   };
+  button('resume').onclick=resume;
   function upright(level=false){
     if(!state)return;
     const up=new THREE.Vector3(0,1,0).transformDirection(navToRaw);
@@ -219,11 +243,69 @@ export function createWalkingTools({viewer,camera,control,container,dirty,onWalk
     const delta=proposed.sub(new THREE.Vector3().copy(state.point).add(new THREE.Vector3(0,eyeHeight,0)));delta.y=0;
     // Cap accidental teleports from nonwalking controls, then constrain all motion to the navmesh.
     if(delta.length()>0.3)delta.setLength(0.3);if(delta.lengthSq()>1e-12)navigation.move(state,delta);placeCamera();upright();
-    const now=performance.now();if(now-lastMapTime>=100){drawMap();lastMapTime=now;}return true;
+    const now=performance.now();if(now-lastMapTime>=100){drawMap();lastMapTime=now;}emit('move');return true;
   }
+
+  // ---- Interface for the wayfinding layer (places, search, routes). Positions are walking-frame metres
+  // ({x, y, z}, +y up, floor near y = 0) unless a name says raw (reconstruction coordinates, as arrays).
+  /** Ray-pick the collision surface under a screen position. Returns {raw: [x, y, z], distance} or null. */
+  function pickSurface(clientX,clientY){
+    if(!surface)return null;
+    const box=container.getBoundingClientRect();camera.updateMatrixWorld(true);
+    const basis=cameraBasis(camera.matrixWorld.elements);
+    const direction=screenRay(basis,camera.fov,box.width/box.height,(clientX-box.left)/box.width,(clientY-box.top)/box.height);
+    const hit=surface.raycast(basis.position,direction);
+    return hit?{raw:hit.point,distance:hit.distance}:null;
+  }
+  /** Is a reconstruction-space point hidden from the camera by the collision surface (a wall, a bench)? */
+  function occluded(raw,margin=0.3){
+    if(!surface||!scale)return false;
+    const o=camera.position;
+    return surface.blocked([o.x,o.y,o.z],raw,margin/scale);
+  }
+  /** Put the walker on the walkable spot nearest to a point and, optionally, face another point. */
+  function teleport(point,toward=null){
+    if(!state)return false;
+    const target=navigation.target(point);if(!target)return false;
+    state={point:target.point,polyRef:target.polyRef};placeCamera();
+    if(toward)setHeading({x:toward.x-target.point.x,z:toward.z-target.point.z});else upright();
+    drawMap();dirty();resort();emit('move');return true;
+  }
+  /** Move the walker by a floor offset, constrained to the walkable area. */
+  function advance(delta){
+    if(!state)return;
+    navigation.move(state,new THREE.Vector3(delta.x,0,delta.z));placeCamera();dirty();emit('move');
+  }
+  /** Current view direction on the floor plane, as a unit {x, z}. */
+  function heading(){
+    const d=camera.getWorldDirection(new ViewVector3());
+    const v=new THREE.Vector3(d.x,d.y,d.z).transformDirection(rawToNav);const n=Math.hypot(v.x,v.z)||1;
+    return{x:v.x/n,z:v.z/n};
+  }
+  /** Turn to face a floor direction, keeping the horizon level. `blend` below 1 turns part of the way. */
+  function setHeading(direction,blend=1){
+    if(!state||Math.hypot(direction.x,direction.z)<1e-6)return;
+    const now=heading(),from=Math.atan2(now.x,now.z),to=Math.atan2(direction.x,direction.z);
+    let turn=to-from;while(turn>Math.PI)turn-=2*Math.PI;while(turn<-Math.PI)turn+=2*Math.PI;
+    const angle=from+turn*Math.min(1,Math.max(0,blend));
+    const forward=new THREE.Vector3(Math.sin(angle),0,Math.cos(angle)).transformDirection(navToRaw);
+    const up=new THREE.Vector3(0,1,0).transformDirection(navToRaw);camera.up.set(up.x,up.y,up.z);
+    camera.lookAt(new ViewVector3(camera.position.x+forward.x,camera.position.y+forward.y,camera.position.z+forward.z));dirty();
+  }
+  const bridge={
+    on(listener){listeners.add(listener);return()=>listeners.delete(listener);},
+    ready:()=>Boolean(navigation&&state),
+    navigation:()=>navigation,
+    player:()=>state,
+    toNav:raw=>new THREE.Vector3(raw[0],raw[1],raw[2]).applyMatrix4(rawToNav),
+    toRaw:point=>new THREE.Vector3(point.x,point.y,point.z).applyMatrix4(navToRaw).toArray(),
+    upRaw:()=>new THREE.Vector3(0,1,0).transformDirection(navToRaw).toArray(),
+    metresPerUnit:()=>scale,eyeHeight:()=>eyeHeight,hasSurfaces:()=>drawables.length>0,
+    pickSurface,occluded,teleport,advance,heading,setHeading,
+  };
   function drawMap(){ctx.clearRect(0,0,240,180);if(!bounds)return;const size=bounds.getSize(new THREE.Vector3());const k=Math.min(220/Math.max(size.x,.1),160/Math.max(size.z,.1));
     const xy=p=>[10+(p.x-bounds.min.x)*k,10+(p.z-bounds.min.z)*k];
     if(mapDirty){mapCtx.clearRect(0,0,240,180);mapCtx.fillStyle='#667c86';for(const p of mapPoints){const[x,y]=xy(p);mapCtx.fillRect(x,y,1,1);}mapDirty=false;}
     ctx.drawImage(mapBase,0,0);if(state){const[x,y]=xy(state.point);ctx.fillStyle='#39e6b4';ctx.beginPath();ctx.arc(x,y,4,0,Math.PI*2);ctx.fill();}}
-  return {setSource,tick,pause,isWalking:()=>Boolean(state),hasSavedSetup:()=>Boolean(savedSetup),resumeSaved:()=>button('resume').click()};
+  return {setSource,tick,pause,isWalking:()=>Boolean(state),hasSavedSetup:()=>Boolean(savedSetup),resumeSaved:resume,...bridge};
 }

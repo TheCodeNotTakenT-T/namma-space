@@ -39,6 +39,18 @@ test('portable Aholo package has relative scene URLs and setup but no private pr
   assert.match(await fs.readFile(path.join(f.output,'index.html'),'utf8'),/\.\/aholo\/\?manifest=\.\.\/scene\/scene.json/);
   await assert.rejects(packageAholoScene(f),/already exists/);
 });
+test('a room over 24 MiB is split into hosted parts that rejoin to the original',async t=>{
+  const f=await fixture(t);const big=Buffer.alloc(50*1024**2+7);for(let i=0;i<big.length;i+=4096)big[i]=i%251;
+  const splatHash=hash(big);await fs.writeFile(path.join(f.folder,'preview.spz'),big);
+  await f.write(f.scenePath,{...f.manifest,splat:{file:'preview.spz',sha256:splatHash,bytes:big.length}});
+  const setup=JSON.parse(await fs.readFile(f.setupPath,'utf8'));setup.sceneIdentity=splatHash+':'+setup.sceneIdentity.split(':')[1];await f.write(f.setupPath,setup);
+  await packageAholoScene(f);
+  const manifest=JSON.parse(await fs.readFile(path.join(f.output,'scene/scene.json'),'utf8'));
+  assert.equal(manifest.splat.parts,3);assert.equal(manifest.splat.bytes,big.length);
+  await assert.rejects(fs.stat(path.join(f.output,'scene/preview.spz')));
+  const parts=await Promise.all([0,1,2].map(i=>fs.readFile(path.join(f.output,'scene/preview.spz.00'+i))));
+  assert.ok(parts.every(p=>p.length<=24*1024**2));assert.equal(hash(Buffer.concat(parts)),splatHash);
+});
 test('wrong assets, missing setup, stale build and output escapes stop before writing',async t=>{
   const f=await fixture(t);
   await assert.rejects(packageAholoScene({...f,setupPath:undefined}),/walking setup/);

@@ -58,6 +58,8 @@ export function validateViewerManifest(m) {
   demand(m.splat?.file === 'preview.spz' && m.collision?.file === 'collision.glb', 'Unsupported room asset paths.');
   demand(sha(m.splat.sha256) && sha(m.collision.sha256), 'Missing room file identities.');
   demand(Number.isSafeInteger(m.splat.bytes) && m.splat.bytes > 0 && m.splat.bytes <= 150 * 1024 ** 2, 'Room file exceeds the supported browser size.');
+  // Large rooms are hosted as preview.spz.000, .001, ... (static hosts cap single files at 25 MiB).
+  demand(m.splat.parts === undefined || (Number.isSafeInteger(m.splat.parts) && m.splat.parts >= 2 && m.splat.parts <= 16), 'Invalid room file parts.');
   demand(Number.isSafeInteger(m.collision.triangles) && m.collision.triangles > 0 && m.collision.triangles <= 250000, 'Room collision geometry exceeds the walking budget.');
   const clean = {version: 1, type: m.type, coordinateSpace: m.coordinateSpace, title: m.title,
     splat: {...m.splat}, collision: {...m.collision}};
@@ -69,5 +71,10 @@ export function validateViewerManifest(m) {
     if (vector(v.up, 3) && Math.abs(Math.hypot(...v.up) - 1) < 1e-3) clean.initialView.up = v.up;
   }
   if (m.walkingSetup) clean.walkingSetup = validateWalk(m.walkingSetup, {splatHash: m.splat.sha256, collisionHash: m.collision.sha256});
+  // Places and zones (venue.json, next to the manifest). Its contents are validated when it is loaded.
+  if (m.venue !== undefined) {
+    demand(m.venue?.file === 'venue.json' && (m.venue.sha256 === undefined || sha(m.venue.sha256)), 'Unsupported venue file.');
+    clean.venue = {...m.venue};
+  }
   return clean;
 }

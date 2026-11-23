@@ -10,6 +10,7 @@ pipeline allows commercial use.
 | --- | --- | --- |
 | [gsplat](https://github.com/nerfstudio-project/gsplat) (commit `512d366`, patched in `env/patches/`) | Differentiable Gaussian splat rendering, MCMC training | Apache-2.0 |
 | [COLMAP / pycolmap](https://github.com/colmap/colmap) 4.2.1, CPU build | SIFT features, matching, camera poses, undistortion | BSD-3-Clause (GPU SiftGPU is never used) |
+| [PPISP](https://github.com/nv-tlabs/ppisp) (commit `a247368`, optional: `train.ppisp`) | Per-frame exposure, vignetting, colour and camera-response correction during training | Apache-2.0 |
 | [MoGe-2](https://github.com/microsoft/MoGe) code and [moge-2-vitl-normal](https://huggingface.co/Ruicheng/moge-2-vitl-normal) weights | Monocular depth and normal priors | MIT |
 | [utils3d](https://github.com/EasternJournalist/utils3d) (MoGe dependency) | Geometry utilities | MIT |
 | [Open3D](https://github.com/isl-org/Open3D) 0.19 | TSDF fusion of rendered depth into the collision mesh | MIT |
@@ -32,5 +33,4 @@ PlayCanvas splat-transform and Vite, all MIT.
 NeurIPS 2024); MoGe-2 (Wang et al., 2025); Structure-from-Motion Revisited (Schönberger and Frahm, CVPR 2016);
 KinectFusion-style TSDF fusion (Newcombe et al., 2011).
 
-An earlier prototype of this project used PlanarGS (Mayan-101/NammaPlanarGS); that code is not part of this
-repository.
+

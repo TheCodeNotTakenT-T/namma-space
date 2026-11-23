@@ -94,7 +94,7 @@ def run(ws, cfg, repair=False):
     by_name = {img.name: img for img in rec.images.values()}
     scales, rows = {}, []
     for k, name in enumerate(names):
-        ws.status(stage="priors", message=f"MoGe-2 depth/normals {k + 1}/{len(names)}", progress=k / len(names))
+        ws.status(stage="priors", message=f"MoGe-3 depth/normals {k + 1}/{len(names)}", progress=k / len(names))
         image = by_name[name]
         camera = rec.cameras[image.camera_id]
         rgb = cv2.cvtColor(cv2.imread(str(out_images / name)), cv2.COLOR_BGR2RGB)

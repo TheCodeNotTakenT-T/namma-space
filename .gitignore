@@ -10,3 +10,4 @@ test-results/
 output/
 data/
 .wrangler/
+*.mp4

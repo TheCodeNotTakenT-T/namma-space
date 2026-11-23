@@ -3,9 +3,9 @@
 **One ordinary video of an indoor space becomes a photorealistic 3D room you can walk through in a web browser.**
 Team ruakpeedkahem (rpk): Akarsh Shrivastav, Mayan S Hiremath, NIT Goa · Techfest 2026-27, IIT Bombay.
 
-- **Live walkthrough:** https://namma-space-7ny.pages.dev/ (open **Walking setup > Enter saved walking setup**,
-  then WASD to move and drag to look; best on a desktop browser using its dedicated GPU). Mirror:
-  https://thecodenottakent-t.github.io/namma-space/ (slower to load from India)
+- **Live app:** https://namma-space-7ny.pages.dev/ opens straight into the room: WASD to walk, drag to look,
+  `/` to search, `M` for the bird's-eye view. Best in a desktop browser using its dedicated GPU.
+  The Round 1 version stays at https://round1.namma-space-7ny.pages.dev/
 - **Capture SOP:** [docs/CAPTURE_SOP.md](docs/CAPTURE_SOP.md)
 - **Sample data:** [tests/sample/](tests/sample/) (30 s of our classroom capture)
 
@@ -19,6 +19,21 @@ video ──> keyframes ──> camera poses ──> depth/normal priors ──>
                                                               v
                        viewer/: import ──> browser viewer (Aholo) with first-person walking ──> static website
 ```
+
+## Round 2: places, search and navigation
+
+- **Tag places and zones** in the browser: click a spot in the room, or click the corners of a floor area.
+  Places are stored in `venue.json` next to the scene, in the scene's own coordinates.
+- **Instant search** that forgives typos and understands other words ("toilet", "where can I sit",
+  "nearest exit"), ranked by walking distance.
+- **Click any label or zone** to see its name, distance and walking time.
+- **Obstacle-aware walking routes** on a navigation mesh built from the reconstruction, drawn on the floor
+  with turn-by-turn directions that update as you walk, and an optional guided walk.
+- **Visits with several stops**, ordered by an exact shortest-route solver.
+- **Bird's-eye view** of the real scan with the ceiling cut away, a heading-up radar, voice search and spoken
+  directions.
+
+Details, module map and tests: [viewer/README.md](viewer/README.md).
 
 ## Repository layout
 
@@ -71,9 +86,27 @@ image quality.
 
 ## Settings that matter
 
-Defaults (`namma/config.py`) are the ones that produced the Round 1 room. Two more are implemented but have not
-run on a GPU yet: `train.strategy = "default"` (original 3DGS densification, grows past 1M Gaussians) and
-`priors.image_long_side = 3840` (4K training images from 4K video).
+Defaults (`namma/config.py`) are the ones that produced the Round 1 room. Options:
+
+- `train.ppisp = true`: NVIDIA PPISP models each frame's exposure, vignetting, colour and camera response
+  during training instead of a simple per-frame colour fix (setup compiles it; see below).
+- `train.strategy = "default"`: original 3DGS densification, grows past 1M Gaussians.
+- `priors.image_long_side = 3840`: 4K training images from 4K video (not yet run on a GPU).
+
+Every training run reports two scores on held-out photos: **PSNR** of the plain render, which is what the
+web viewer shows, and **colour-matched PSNR** after the best colour map onto the photo, which ignores
+exposure differences and measures detail and geometry.
+
+## Compare settings on a finished room
+
+[`notebooks/quality_experiment.py`](notebooks/quality_experiment.py) retrains a finished room under several
+settings on its saved frames, camera solve and depth priors, and renders held-out photos from every result
+side by side (`python -m namma.experiment`, `python -m namma compare`). Each result is also a room you can
+import into the viewer. Its **0. Quick GPU test** button (`python -m namma.experiment selftest`, about 15
+minutes) first runs `tests/run_local_experiment.py` on the bundled clip on the cloud GPU: two tiny rooms,
+one killed and resumed, and a report, with a local folder standing in for Drive. On a laptop that cannot
+compile gsplat, `--small` runs the same test with the stand-in renderer `tests/fake_gsplat.py`, so it checks
+PPISP and the experiment flow but not gsplat.
 
 ## Licences
 

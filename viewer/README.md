@@ -42,7 +42,57 @@ for you). Free flight: **WASD** to move, drag to look. To walk with collisions, 
 For smooth playback on laptops with two GPUs, run the browser on the dedicated GPU (Windows: Settings > System >
 Display > Graphics > your browser > High performance) and set **Display quality** to **Balanced**.
 
-## 3. Package a browser demo
+A room that has a saved walking setup opens straight into the walk. **Tag places** (top right) shows the
+setup panel again.
+
+## 3. Tag places, search and get directions
+
+Once you are walking, the room is a searchable venue:
+
+- **Tag places** (local development, or `?studio=1` on a hosted room) opens the tagging tools. **Add place**,
+  then click the spot in the room; **Add zone**, then click the corners of a floor area and **Finish zone**.
+  Give each a name, a kind and other names people might search for. **Save** writes `venue.json` next to the
+  scene in `data/scene-library/<id>/` (the packager includes it); **Export** / **Import** move it as a file.
+- **Search** (press `/`): results appear while typing, tolerate typos (`projecter`), understand other words
+  (`toilet` finds a washroom, `where can I sit` finds seating) and are listed nearest first by walking
+  distance. `nearest exit` sorts by distance.
+- **Click** a label, a tagged spot or a zone in the room to see its name and the route to it. **Directions**
+  gives turn-by-turn steps that update as you walk; **Walk me there** walks the route for you; **Jump there**
+  sets you down two steps short of the place, facing it. Double-click the floor, or click the map, to be
+  walked to that spot.
+- The **radar** (bottom left) is drawn from the walkable area itself, turns with you and shows places, the
+  route and the destination; click it for the whole floor.
+- **Bird's-eye view** (press `M`): the camera lifts out of the room while the ceiling is cut away, so the real
+  scan is seen from above as a dollhouse. Drag to turn, scroll to zoom, click the floor or a place to land
+  there. **Jump there** uses the same flight: up over the room and down in front of the place.
+- **Visits with several stops:** add places with **Add to a visit**, then **Walk the shortest route**. Walking
+  distances between every pair of stops come from the navmesh and the order is solved exactly (Held-Karp, up
+  to 12 stops). The plan says how much shorter it is than the order you picked; the guided walk pauses at
+  each stop, announces it and lights it up.
+- **Voice:** the microphone in the search field takes a spoken request ("take me to the projector") and
+  starts directions; the speaker on the direction sign reads each instruction aloud. Both use the browser's
+  own speech features (no download, no account); the microphone appears only where the browser supports it.
+- **Arrival:** the room assembles outwards from where you stand when it opens, and a ring of light runs out
+  from you when directions start.
+
+How it works, in `src/` (plain modules with unit tests in `test/`):
+
+| Module | Role |
+| --- | --- |
+| `venue.js` | The venue document: places, zones, levels; validation of untrusted files |
+| `search.js` | In-memory search: prefix, synonym and edit-distance matching, ranking, "nearest" intent |
+| `spatial-index.js` | Uniform-grid index: zone containing a point, nearest places |
+| `navigation.js` | Recast/Detour navmesh: walkable area, unreachable islands removed, routes, movement |
+| `route.js` | Route length and time, turn-by-turn steps, progress, clearance from obstacles |
+| `bvh.js` | Ray queries against the collision mesh (clicks, labels hidden behind walls) |
+| `projection.js` | Camera projection for labels and the map transform |
+| `tour.js` | Shortest order for a visit with several stops (exact up to 12 stops, 2-opt beyond) |
+| `room.js` | Wall direction and a wall-aligned box around the scan, used by the bird's-eye view |
+
+Routes are checked in tests against an exhaustive grid search (within 2% of the shortest path) and for
+clearance from the edge of the walkable area.
+
+## 4. Package a browser demo
 
 Choose **3. Package a browser demo** in the launcher (or run `npm run build`, then
 `node scripts/package-aholo-scene.mjs --scene ../data/scene-library/<id>/scene.json --setup namma-walking-setup.json --output ../output/demo`).

@@ -1,10 +1,20 @@
-"""Camera poses with pycolmap (BSD-3), CPU SIFT only.
+"""Camera poses with pycolmap (BSD-3).
 
-COLMAP's GPU SIFT is SiftGPU, licensed for non-profit research only, so it is never used here; the
-PyPI pycolmap wheel has no CUDA, which guarantees that. Matching is sequential (video order) plus a
-quadratic long-range pass and, if the vocabulary tree can be fetched, loop detection. The global
-mapper runs first; the incremental mapper is tried when too few frames register.
+GPU SIFT extraction and matching are used when the installed pycolmap reports CUDA support
+(`pycolmap.has_cuda` is True -- a boolean attribute, true for the `pycolmap-cuda12` / `lyehe/build_gpu_colmap` wheel
+installed by `molab_setup.sh`). Otherwise the CPU path is used. Set ``NAMMA_SFM_FORCE_CPU=1`` in the
+environment to force the CPU path even when CUDA is available (debugging, shared GPU, OOM).
+
+Matching is sequential (video order) plus a quadratic long-range pass and, if the vocabulary tree
+can be fetched, loop detection. The global mapper runs first; the incremental mapper is tried when
+too few frames register.
+
+Licensing note: legacy COLMAP GPU SIFT (SiftGPU) was non-commercial. Modern COLMAP's CUDA feature
+extractor (the path exposed by pycolmap-cuda12 / COLMAP 4.2) is BSD-3. Verify the build you ship if
+licence compliance matters for your distribution; the lyehe/build_gpu_colmap wheel used here is a
+build of upstream COLMAP 4.2.0, not the legacy SiftGPU path.
 """
+import os
 import shutil
 import urllib.request
 
@@ -30,6 +40,22 @@ def _rotation_between(a, b):
         return np.eye(3) if c > 0 else np.diag([1.0, -1.0, -1.0])
     vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + vx + vx @ vx / (1 + c)
+
+
+def _sfm_device():
+    """Pick the pycolmap device: GPU when CUDA is available and not forced off.
+
+    Returns ``(device, use_gpu, label)`` for ``pycolmap.extract_features`` / ``match_sequential``.
+    ``device`` is a ``pycolmap.Device``; ``use_gpu`` is the matching flag for the options structs;
+    ``label`` is a short human-readable string for status messages and logs.
+    """
+    if os.environ.get("NAMMA_SFM_FORCE_CPU") == "1":
+        return pycolmap.Device.cpu, False, "CPU (NAMMA_SFM_FORCE_CPU=1)"
+    # pycolmap.has_cuda is a boolean attribute set at import time (True for the pycolmap-cuda12 /
+    # lyehe/build_gpu_colmap wheel), NOT a callable -- do not call it.
+    if getattr(pycolmap, "has_cuda", False):
+        return pycolmap.Device.cuda, True, "GPU (pycolmap-cuda)"
+    return pycolmap.Device.cpu, False, "CPU (pycolmap without CUDA)"
 
 
 def level_and_center(rec):
@@ -98,18 +124,24 @@ def run(ws, cfg):
         shutil.rmtree(target, ignore_errors=True) if target.is_dir() else target.unlink(missing_ok=True)
     db = ws.sfm / "database.db"
 
-    ws.status(stage="sfm", message=f"Extracting SIFT features from {len(names)} frames (CPU)", progress=None)
+    device, use_gpu, device_label = _sfm_device()
+    ws.log(f"sfm: feature extraction and matching on {device_label} "
+           f"({len(names)} frames, max_image_size={sc.max_image_size}, max_features={sc.max_features})")
+
+    ws.status(stage="sfm",
+              message=f"Extracting SIFT features from {len(names)} frames ({device_label})",
+              progress=None)
     reader = pycolmap.ImageReaderOptions()
     reader.camera_model = sc.camera_model
     extraction = pycolmap.FeatureExtractionOptions()
-    extraction.use_gpu = False
+    extraction.use_gpu = use_gpu
     extraction.max_image_size = sc.max_image_size
     extraction.sift.max_num_features = sc.max_features
     pycolmap.extract_features(db, images, image_names=names, camera_mode=pycolmap.CameraMode.SINGLE,
-                              reader_options=reader, extraction_options=extraction, device=pycolmap.Device.cpu)
+                              reader_options=reader, extraction_options=extraction, device=device)
 
     matching = pycolmap.FeatureMatchingOptions()
-    matching.use_gpu = False
+    matching.use_gpu = use_gpu
     matching.guided_matching = True
     pairing = pycolmap.SequentialPairingOptions()
     pairing.overlap = sc.overlap
@@ -121,14 +153,14 @@ def run(ws, cfg):
         pairing.loop_detection_period = 5
         pairing.loop_detection_num_images = 30
         pairing.loop_detection_min_index_distance = 30
-    ws.status(message=f"Matching neighbouring frames (overlap {sc.overlap}, loop detection {'on' if vocab else 'off'})")
-    pycolmap.match_sequential(db, matching_options=matching, pairing_options=pairing, device=pycolmap.Device.cpu)
+    ws.status(message=f"Matching neighbouring frames (overlap {sc.overlap}, loop detection {'on' if vocab else 'off'}, {device_label})")
+    pycolmap.match_sequential(db, matching_options=matching, pairing_options=pairing, device=device)
     if sc.quadratic_overlap > 0:
         far = pycolmap.SequentialPairingOptions()
         far.overlap = sc.quadratic_overlap
         far.quadratic_overlap = True
-        ws.status(message="Matching long-range frame pairs")
-        pycolmap.match_sequential(db, matching_options=matching, pairing_options=far, device=pycolmap.Device.cpu)
+        ws.status(message=f"Matching long-range frame pairs ({device_label})")
+        pycolmap.match_sequential(db, matching_options=matching, pairing_options=far, device=device)
 
     candidates = {}
     if sc.mapper in ("auto", "global"):
@@ -182,4 +214,5 @@ def run(ws, cfg):
     pycolmap.undistort_images(ws.sfm / "undistorted", sparse, images, output_type="COLMAP",
                               undistort_options=undistort, jpeg_quality=95)
     return {"mapper": mapper, **summary, **level, "candidates": {k: _summary(v, len(names)) for k, v in candidates.items()},
-            "loop_detection": bool(vocab), "warnings": warnings}  # outlier cameras are dropped by trainer.load_dataset
+            "loop_detection": bool(vocab), "gpu_used": use_gpu, "device": device_label,
+            "warnings": warnings}  # outlier cameras are dropped by trainer.load_dataset 
